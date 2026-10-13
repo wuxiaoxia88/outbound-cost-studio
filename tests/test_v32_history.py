@@ -20,6 +20,19 @@ class CalendarMath(unittest.TestCase):
     def test_strict_300_threshold(self):
         for n in (0,1,299):self.assertIsNone(h.change({'n':600},{'n':n}))
         for n in (300,352):self.assertAlmostEqual(h.change({'n':600},{'n':n})['n'],600/n-1)
+    def test_sparse_month_threshold_and_zero_rows(self):
+        months=[{'month':f'2026-{m:02d}','n':n} for m,n in [(3,0),(4,99),(5,100),(6,101),(8,7),(9,1000)]]
+        visible,hidden=h.visible_months(months,months[-1],months[-2])
+        self.assertEqual([x['month'] for x in visible],['2026-05','2026-06','2026-08','2026-09'])
+        self.assertEqual(hidden,1)
+        self.assertIsNone(h.change(months[-1],months[-2]))
+    def test_previous_calendar_month_kept_below_ten_percent(self):
+        current={'month':'2026-09','n':4000};previous={'month':'2026-08','n':352}
+        self.assertEqual(h.visible_months([previous,current],current,previous),([previous,current],0))
+        self.assertIsNotNone(h.change(current,previous))
+        # Empty anchors are never inserted; a missing prior month is not skipped.
+        empty={'month':'2026-08','n':0}
+        self.assertEqual(h.visible_months([empty,current],current,empty),([current],0))
 
 class WarehouseHistory(unittest.TestCase):
     def setUp(self):
@@ -54,7 +67,22 @@ class WarehouseHistory(unittest.TestCase):
         self.assertEqual((r['previousStart'],r['previousEnd']),('2026-08-30','2026-08-31'))
     def test_no_history_or_empty_customer(self):
         r=self.call(customers=['不存在的客户']);self.assertIsNone(r['overview']['daily']);self.assertEqual(r['history']['current']['n'],0)
+        self.assertEqual(r['history']['months'],[])
         r=self.call(customers=['客户A'],comparePrevious=False);self.assertFalse(r['previous']['enabled'])
+    def test_sparse_history_uses_selected_normal_volume_and_six_candidates(self):
+        rows=[]
+        for month,n in [(2,200),(3,1),(5,11),(6,10),(7,9),(9,90),(10,20)]:
+            rows.extend(row(f'history-{month}-{i}',2,cust='客户A',send=f'2026-{month:02d}-01 10:00:00') for i in range(n))
+        rows.append(row('return-only-month',2,cust='客户A',product='拦截',send='2026-04-01 10:00:00'))
+        path=self.home/'history.xlsx';path.write_bytes(workbook(H,rows));self.wh.import_file(path)
+        for selection,expected,hidden in [(['客户A'],['2026-05','2026-06','2026-08','2026-09'],2),
+                                           ('all',['2026-05','2026-08','2026-09'],3),
+                                           (['客户A','客户B'],['2026-05','2026-08','2026-09'],3)]:
+            with self.subTest(selection=selection):
+                history=self.call(customers=selection)['history']
+                self.assertEqual([x['month'] for x in history['months']],expected)
+                self.assertEqual(history['hiddenMonthCount'],hidden)
+                self.assertTrue(all(x['n']>0 for x in history['months']))
     def test_meta_version_is_not_data_version(self):
         m=a.meta(self.wh);self.assertEqual(m['version'],'3.2.0');self.assertIsInstance(m['dataVersion'],int)
 

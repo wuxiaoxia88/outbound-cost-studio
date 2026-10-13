@@ -40,6 +40,20 @@ def change(current, previous):
     return delta
 
 
+def visible_months(months, current, previous):
+    """Filter sparse months within the six-month candidate window, keeping anchors."""
+    visible = []
+    hidden = 0
+    for month in months:
+        if month['n'] <= 0:
+            continue
+        if month['month'] in (current['month'], previous['month']) or month['n'] * 10 >= current['n']:
+            visible.append(month)
+        else:
+            hidden += 1
+    return visible, hidden
+
+
 def _rows(cur, scope, steps):
     """One monthly/period aggregation, exact sums; date sets retain union semantics."""
     where,args=rules.filter_sql(scope)
@@ -102,7 +116,8 @@ def attach(wh,cur,version,req,ctx,result,names,all_view):
     prelim=_summary(nowdata,names,all_view,nowdays,0)
     main=max(range(12),key=lambda i:prelim['distribution'][i])
     sums={m:{'month':m,**_summary(d,names,all_view,ds,main)} for m,(d,ds) in monthly.items()}
-    result['history']={'months':[sums[m] for m in months],'current':sums[anchor],'previous':sums[prev],
+    visible,hidden=visible_months([sums[m] for m in months],sums[anchor],sums[prev])
+    result['history']={'months':visible,'hiddenMonthCount':hidden,'current':sums[anchor],'previous':sums[prev],
                        'mainBand':{'lo':main*.5,'hi':(main+1)*.5 if main<11 else None},'delta':change(sums[anchor],sums[prev]),'minimum':MIN_PREV}
     if req.get('comparePrevious'):
         pd=read({**scope,'start':pr['previousStart'],'end':pr['previousEnd']})

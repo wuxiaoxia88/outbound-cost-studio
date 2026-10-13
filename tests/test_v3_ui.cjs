@@ -61,3 +61,16 @@ test('decimal drafts accept decimal intermediates and reject invalid commits',()
  for(const n of ['0.','.5','0.35','1.044','0','12.'])assert.equal(V.validNumber(n),true,n);
  for(const n of ['',' ','-1','NaN','Infinity','1e309','0..3','.'])assert.equal(V.validNumber(n),false,n);
 });
+test('history shows sparse-month notice only when needed and uses ISO months',()=>{
+ const ctx=vm.createContext({...V,V3:V});
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v32-history.js'),'utf8'),ctx);
+ const month=(m,n)=>({month:m,n,daily:n,avgW:1,avg:2,criticalShare:0,mainShare:1,distribution:[1,...Array(11).fill(0)]});
+ const current=month('2026-09',4000),previous=month('2026-08',7);
+ ctx.r={history:{months:[previous,current],current,previous,mainBand:{lo:0,hi:.5},delta:null,hiddenMonthCount:4}};
+ let html=vm.runInContext('historyPanel(r)',ctx);
+ assert.ok(html.includes('另有 4 个零星月份（不足当月 10%，多为补录件）未列出'));
+ assert.ok(html.includes('2026-08 仅 7 票，样本太少，不做比较'));
+ assert.ok(html.includes('<td>2026-09</td>'));assert.ok(!html.includes('2026 年'));
+ ctx.r.history.hiddenMonthCount=0;html=vm.runInContext('historyPanel(r)',ctx);
+ assert.ok(!html.includes('零星月份'));
+});
