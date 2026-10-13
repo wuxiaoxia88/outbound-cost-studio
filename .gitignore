@@ -1,0 +1,27 @@
+# Local business data, dependencies and deliverables
+data/
+dist/
+runtime-mac/
+runtime-windows/
+archive/
+outputs/
+协作/
+AGENTS.md
+qa/
+verification/
+*-verification.json
+import-result.log
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+*.zip
+# Generated previews contain local customer data
+design/ui-preview/data.js
+design/ui-preview/history.js
+design/ui-preview/界面预览.html
+# Accepted older UI assets remain available locally, never included in this release
+web/v3.*
+web/v3-*
+web/v31.*
+web/v31-*

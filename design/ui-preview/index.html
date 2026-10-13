@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>出港成本分析</title>
+<style>
+/* Layout: one working column. Scope bar on top, summary before detail, charts then the band × flow table. */
+:root{
+  --bg:#f3f5f9; --panel:#ffffff; --line:#dfe4ee; --line2:#eef1f6;
+  --ink:#16213a; --ink2:#4a5672; --ink3:#8590a8;
+  --accent:#1f3d7a; --accent-soft:#e7edf8;
+  /* concentration (navy depth) */
+  --c-main:#1f3d7a; --c-sub:#6f8fc9; --c-low:#c9d6ee;
+  /* cost vs network (semantic, separate from accent) */
+  --g2:#1e8a5a; --g1:#bfe5d1; --n0:#f4f6fa; --r1:#f6d0c6; --r2:#c4452b;
+  --g2-ink:#ffffff; --r2-ink:#ffffff; --cell-ink:#16213a;
+  --warn:#b26b00; --warn-soft:#fff3dc;
+  /* cost interval scale (low → high), separate from concentration navy */
+  --k1:#1f3d7a; --k2:#c4452b; --k3:#1e8a5a; --k4:#b26b00; --k5:#7a4fb3; --k6:#2b8fb3; --k7:#8a6d3b; --k8:#d14d8b;
+  --f1:#1f3d7a; --f2:#3c63a8; --f3:#6f8fc9; --f4:#9db4de; --f5:#c9d6ee; --f6:#7c8aa6;
+  --s1:#fbf5ea; --s2:#f5e2bf; --s3:#edc68a; --s4:#de9b55; --s5:#c06a2c; --s5-ink:#ffffff;
+  --font:"PingFang SC","Microsoft YaHei","Noto Sans SC","Helvetica Neue",Arial,sans-serif;
+  --num:"DIN Alternate","Bahnschrift","DIN Condensed","Roboto Condensed",var(--font);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0f1524; --panel:#161e31; --line:#283350; --line2:#1d2640;
+  --ink:#e6ebf5; --ink2:#a9b4cc; --ink3:#6f7b96;
+  --accent:#8fb0ee; --accent-soft:#1f2b48;
+  --c-main:#8fb0ee; --c-sub:#4d6aa3; --c-low:#2a3a5f;
+  --g2:#2fae75; --g1:#1d4a37; --n0:#1b2338; --r1:#5a2b22; --r2:#e2674c;
+  --g2-ink:#06140d; --r2-ink:#1a0703; --cell-ink:#e6ebf5;
+  --warn:#f0b04a; --warn-soft:#3a2c12; --k1:#8fb0ee; --k2:#ef7a5f; --k3:#45c28a; --k4:#f0b04a; --k5:#b48ef0; --k6:#5cc3e6; --k7:#cfae74; --k8:#f07ab4; --f1:#b9cdf5; --f2:#8fb0ee; --f3:#6788c9; --f4:#4a68a3; --f5:#344a78; --f6:#6f7b96; --s1:#1d2436; --s2:#3a3424; --s3:#5e4a26; --s4:#8a5e28; --s5:#c27a35; --s5-ink:#140a02; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1524; --panel:#161e31; --line:#283350; --line2:#1d2640;
+  --ink:#e6ebf5; --ink2:#a9b4cc; --ink3:#6f7b96;
+  --accent:#8fb0ee; --accent-soft:#1f2b48;
+  --c-main:#8fb0ee; --c-sub:#4d6aa3; --c-low:#2a3a5f;
+  --g2:#2fae75; --g1:#1d4a37; --n0:#1b2338; --r1:#5a2b22; --r2:#e2674c;
+  --g2-ink:#06140d; --r2-ink:#1a0703; --cell-ink:#e6ebf5;
+  --warn:#f0b04a; --warn-soft:#3a2c12; --k1:#8fb0ee; --k2:#ef7a5f; --k3:#45c28a; --k4:#f0b04a; --k5:#b48ef0; --k6:#5cc3e6; --k7:#cfae74; --k8:#f07ab4; --f1:#b9cdf5; --f2:#8fb0ee; --f3:#6788c9; --f4:#4a68a3; --f5:#344a78; --f6:#6f7b96; --s1:#1d2436; --s2:#3a3424; --s3:#5e4a26; --s4:#8a5e28; --s5:#c27a35; --s5-ink:#140a02; color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 var(--font)}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums;letter-spacing:.01em}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* top bar */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--panel);border-bottom:1px solid var(--line)}
+.top-in{max-width:1320px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:24px;flex-wrap:wrap}
+.brand{font-weight:700;letter-spacing:.04em;font-size:15px;white-space:nowrap}
+.brand .ver{display:inline-block;font:600 11px/1 var(--num);letter-spacing:.02em;color:var(--accent);background:var(--accent-soft);border-radius:4px;padding:3px 6px;vertical-align:2px;margin-left:4px}
+.brand small{display:block;font-weight:400;color:var(--ink3);font-size:11px;letter-spacing:.08em}
+.tabs{display:flex;gap:4px}
+.tabs button{border:0;background:none;padding:8px 14px;border-radius:8px;color:var(--ink2);font-weight:600}
+.tabs button[aria-selected="true"]{background:var(--accent-soft);color:var(--accent)}
+.top-meta{margin-left:auto;color:var(--ink3);font-size:12px;text-align:right}
+.preview-tag{display:inline-block;background:var(--warn-soft);color:var(--warn);border-radius:4px;padding:1px 6px;font-size:11px;margin-left:6px}
+
+main{max-width:1320px;margin:0 auto;padding-block:18px 60px;padding-inline:20px;display:flex;flex-direction:column;gap:16px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;min-width:0}
+.panel h2{font-size:15px;margin:0;text-wrap:balance}
+.panel-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.hint{color:var(--ink3);font-size:12px}
+.eyebrow{font-size:11px;letter-spacing:.12em;color:var(--ink3);text-transform:uppercase}
+
+/* scope bar */
+.scope{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.field>label,.field>.lab{font-size:12px;color:var(--ink3)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:5px 12px;font-size:13px;white-space:nowrap}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+.chip.all[aria-pressed="true"]{background:var(--ink2);border-color:var(--ink2);color:var(--panel)}
+.chip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--ink);display:inline-flex;align-items:center}
+.chip .x{border:0;background:none;margin-left:4px;padding:0 2px;color:var(--ink3);font-size:15px;line-height:1}
+.search{border:1px dashed var(--line);border-radius:999px;padding:5px 12px;font-size:13px;background:var(--panel);min-width:200px;flex:1 1 200px;max-width:320px}
+/* groups */
+.groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.grp{border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.grp-h{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.grp-h b{font-size:14px}
+.badge{font-size:11px;border-radius:4px;padding:0 5px;white-space:nowrap}
+.badge.up{background:var(--r1);color:var(--ink)} .badge.down{background:var(--g1);color:var(--ink)} .badge.warn{background:var(--warn-soft);color:var(--warn)}
+.spark{width:100%;height:38px;display:block}
+.spark .b-main{fill:var(--c-main)} .spark .b-sub{fill:var(--c-sub)} .spark .b-low{fill:var(--c-low)}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:none;padding:6px 12px;font-size:13px;color:var(--ink2);white-space:nowrap}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.seg button+button{border-left:1px solid var(--line)}
+
+/* KPI row */
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.kpi{background:var(--panel);padding:12px 14px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.kpi .k{font-size:12px;color:var(--ink3)}
+.kpi .v{font-size:24px;font-weight:600;line-height:1.2}
+.kpi .s{font-size:12px;color:var(--ink2)}
+.kpi.alert .v{color:var(--warn)}
+.up{color:var(--r2)} .down{color:var(--g2)}
+
+/* charts */
+.chart{width:100%;height:auto;display:block}
+.chart text{fill:var(--ink3);font-size:11px;font-family:var(--num)}
+.chart .lbl{fill:var(--ink2)}
+.chart .b-main{fill:var(--c-main)} .chart .b-sub{fill:var(--c-sub)} .chart .b-low{fill:var(--c-low)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--ink2);align-items:center}
+.sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px}
+.ln{display:inline-block;width:18px;height:0;border-top:2px solid;vertical-align:3px;margin-right:5px}
+
+/* band × flow table */
+.tw{overflow-x:auto}
+table.heat{border-collapse:separate;border-spacing:3px;min-width:100%;font-size:13px}
+.heat th{font-weight:500;color:var(--ink2);text-align:center;padding:4px 6px;white-space:nowrap}
+.heat th.rowh{text-align:left;font-weight:600;color:var(--ink);position:sticky;left:0;background:var(--panel);z-index:1;min-width:92px}
+.heat thead th{vertical-align:bottom}
+.bandh{display:flex;flex-direction:column;gap:3px;align-items:stretch;min-width:84px}
+.bandh .bl{font-weight:600;color:var(--ink)}
+.bandh .bar{height:6px;border-radius:3px;background:var(--line2);overflow:hidden}
+.bandh .bar i{display:block;height:100%}
+.cls{font-size:11px;border-radius:4px;padding:0 5px;align-self:center}
+.cls.main{background:var(--c-main);color:var(--panel)} .cls.sub{background:var(--c-sub);color:#fff} .cls.low{background:var(--c-low);color:var(--ink2)}
+td.c{border-radius:6px;padding:6px 8px;text-align:center;cursor:pointer;color:var(--cell-ink);min-width:84px;position:relative}
+td.c .a{font-size:15px;font-weight:600;display:block}
+td.c .m{font-size:11px;opacity:.75}
+td.c.g2{background:var(--g2);color:var(--g2-ink)} td.c.g1{background:var(--g1)} td.c.n0{background:var(--n0)} td.c.r1{background:var(--r1)} td.c.r2{background:var(--r2);color:var(--r2-ink)}
+td.c.s1{background:var(--s1)} td.c.s2{background:var(--s2)} td.c.s3{background:var(--s3)} td.c.s4{background:var(--s4)} td.c.s5{background:var(--s5);color:var(--s5-ink)}
+td.c .dv{position:absolute;top:2px;right:4px;font-size:10px;font-weight:700;line-height:1}
+td.c .dv.up{color:var(--r2)} td.c .dv.down{color:var(--g2)}
+td.c.s5 .dv.up,td.c.r2 .dv.up{color:var(--s5-ink)}
+td.c.small{background:repeating-linear-gradient(135deg,var(--n0) 0 6px,transparent 6px 10px);color:var(--ink3)}
+td.c.empty{cursor:default;color:var(--ink3);background:none}
+td.c:hover:not(.empty){outline:2px solid var(--accent)}
+td.c.mainc::after{content:"";position:absolute;left:6px;right:6px;bottom:2px;height:2px;border-radius:2px;background:var(--c-main);opacity:.9}
+td.tot{color:var(--ink2);text-align:right;padding:4px 8px;white-space:nowrap}
+tr.foot th,tr.foot td{border-top:1px solid var(--line)}
+.more{border:0;background:none;color:var(--accent);padding:6px 0;font-size:13px}
+
+/* insight list */
+.insights{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.ins{border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.ins b{font-size:13px}
+.ins p{margin:0;color:var(--ink2);font-size:13px}
+.ins.warn{border-color:var(--warn);background:var(--warn-soft)}
+
+/* comparison */
+.cmp-grid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px}
+table.list{border-collapse:collapse;width:100%;font-size:13px}
+.list th{font-weight:500;color:var(--ink3);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.list td{text-align:right;padding:7px 8px;border-bottom:1px solid var(--line2);white-space:nowrap}
+.list th:first-child,.list td:first-child{text-align:left}
+.list tr.click{cursor:pointer} .list tr.click:hover td{background:var(--accent-soft)}
+.best{color:var(--g2);font-weight:600} .worst{color:var(--r2);font-weight:600}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:0}
+.mix{display:flex;height:16px;border-radius:4px;overflow:hidden;min-width:160px}
+.mix i{display:block;height:100%}
+
+/* drawer */
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(440px,100%);background:var(--panel);border-left:1px solid var(--line);box-shadow:-12px 0 30px rgba(10,20,40,.12);z-index:40;padding:20px 22px;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+.drawer h3{margin:0;font-size:16px}
+.xbtn{position:absolute;right:14px;top:12px;border:0;background:none;font-size:20px;color:var(--ink3)}
+.stack{display:flex;height:22px;border-radius:5px;overflow:hidden}
+.stack i{display:block;height:100%}
+.kv{display:grid;grid-template-columns:1fr auto auto;gap:4px 12px;font-size:13px}
+.kv span:nth-child(3n+2),.kv span:nth-child(3n){text-align:right}
+
+/* quote */
+.qbar{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+.qbar input[type=text],.qbar input[type=number],.qbar select{border:1px solid var(--line);border-radius:7px;padding:6px 10px;background:var(--panel);min-width:0}
+.qbar input[type=number]{width:90px}
+table.quote{border-collapse:separate;border-spacing:3px;font-size:13px;min-width:100%}
+.quote th{font-weight:500;color:var(--ink2);padding:4px 6px;white-space:nowrap}
+.quote td{padding:4px 6px;border-radius:6px;background:var(--n0);text-align:center;min-width:96px}
+.quote td.ref{background:repeating-linear-gradient(135deg,var(--n0) 0 6px,transparent 6px 10px);border:1px dashed var(--line)}
+.quote td.none{background:none;color:var(--ink3)}
+.quote td.edited{box-shadow:inset 0 0 0 2px var(--warn)}
+.quote td.loss{box-shadow:inset 0 0 0 2px var(--r2)}
+.quote input{width:64px;border:1px solid var(--line);border-radius:5px;padding:3px 4px;text-align:center;background:var(--panel);font-family:var(--num);font-size:15px;font-weight:600}
+.quote small{display:block;font-size:11px;color:var(--ink3)}
+.tag{font-size:10px;border-radius:3px;padding:0 4px;background:var(--line);color:var(--ink2)}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 14px;font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+.drawer>*{flex-shrink:0}
+.drawer.sim{width:min(560px,100%)}
+.sim-list{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.sim-row{display:grid;grid-template-columns:auto minmax(0,1fr) 92px;gap:12px;align-items:start;padding:10px 0;border-bottom:1px solid var(--line2)}
+.sim-row.on{background:linear-gradient(90deg,var(--accent-soft),transparent 60%)}
+.sim-body{min-width:0;font-size:13px}.sim-params{margin-top:4px;color:var(--ink2);font-size:12px;line-height:2}
+.sim-eff{text-align:right;font-size:14px;font-weight:600}.sim-eff small{font-size:11px;font-weight:400;margin-left:2px}
+/* v3.2 refinements: plain-language tips, period deltas, combobox, finance tables */
+.tip{display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--line);color:var(--ink3);font:600 10px/1 var(--num);cursor:help;margin-left:3px;vertical-align:1px}
+.tip:hover,.tip:focus{border-color:var(--accent);color:var(--accent)}
+.kpi .v small{font-size:13px;font-weight:500;color:var(--ink2)}
+.kpi .delta{font-size:12px;color:var(--ink3);border-top:1px dashed var(--line2);padding-top:4px;margin-top:4px}
+.kpi .delta .up{color:var(--r2)} .kpi .delta .down{color:var(--g2)}
+.combo{position:relative;flex:1 1 220px;max-width:340px}
+.combo .search{width:100%;max-width:none}
+.combo-list{position:absolute;z-index:30;top:calc(100% + 4px);left:0;right:0;min-width:300px;max-height:360px;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 28px rgba(10,20,40,.14);padding:4px}
+.combo-list .opt{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:7px 10px;border-radius:7px;cursor:pointer;font-size:13px}
+.combo-list .opt .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.combo-list .opt .meta{color:var(--ink2);font-size:12px}
+.combo-list .opt .tag{font-size:11px;color:var(--ink3);background:var(--line2);border-radius:4px;padding:1px 6px;white-space:nowrap}
+.combo-list .opt.active,.combo-list .opt:hover{background:var(--accent-soft)}
+.combo-list mark{background:none;color:var(--accent);font-weight:700}
+.combo-list .more-hint{padding:8px 10px;font-size:12px;color:var(--ink3)}
+.bandh .bw{font-size:11px;color:var(--ink3)}
+.hbar{display:grid;grid-template-columns:76px minmax(0,1fr) 92px;gap:8px;align-items:center;padding:3px 0;font-size:12px}
+.hbar .hb{display:flex;flex-direction:column;gap:2px}
+.hbar .hb i{display:block;height:7px;border-radius:2px;min-width:1px}
+.hbar .hb i.prev{background:var(--c-low)} .hbar .hb i.cur{background:var(--c-main)}
+.hbar .hv{text-align:right} .hbar small{font-size:11px;margin-left:4px}
+table.fin th{font-size:12px} table.fin td,table.fin th{padding:7px 10px}
+table.list tr.total td{border-top:1.5px solid var(--ink3);font-weight:600;background:var(--line2)}
+.list th{color:var(--ink3);font-weight:500;letter-spacing:.02em}
+.list td.num,.list th:not(:first-child){font-variant-numeric:tabular-nums}
+.about{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px 24px;font-size:13px}
+.about b{display:block;font:600 15px var(--num)}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:8px 16px;border-radius:8px;z-index:60;font-size:13px}
+
+/* settings */
+.set-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;color:var(--ink2)}
+.drop b{color:var(--ink);font-size:15px}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font-size:13px}
+.row:last-child{border-bottom:0}
+.switch{width:36px;height:20px;border-radius:999px;border:0;background:var(--line);position:relative;flex:none}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:var(--panel);transition:left .15s}
+.switch[aria-checked="true"]{background:var(--accent)} .switch[aria-checked="true"]::after{left:19px}
+.stepchip{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:13px;margin:0 6px 6px 0}
+@media (max-width:1000px){.kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.insights,.cmp-grid,.set-grid{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:560px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.top-meta{margin-left:0;text-align:left}main{padding-inline:16px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <div class="brand">出港成本分析 <span class="ver" title="发布 2026-10-13 · 数据版本 7">v3.2.0</span><small>OUTBOUND COST STUDIO</small></div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-page="analysis" aria-selected="true">成本分析</button>
+    <button role="tab" data-page="quote" aria-selected="false">报价</button>
+    <button role="tab" data-page="data" aria-selected="false">数据与设置</button>
+  </nav>
+  <div class="top-meta" id="topMeta"></div>
+</div></header>
+<main id="app"></main>
+<div id="drawer" hidden></div>
+<script src="data.js"></script>
+<script src="history.js"></script>
+<script>
+'use strict';
+const S=window.SAMPLE, NC=S.customers.length, NP=S.provinces.length;
+const CC=['var(--k1)','var(--k2)','var(--k3)','var(--k4)','var(--k5)','var(--k6)','var(--k7)','var(--k8)']; // comparison series colours, assigned by selection order
+const MAX_CMP=8, MIN_GROUP_N=300;
+const DEFAULT=Math.max(0,S.customers.indexOf('客户A'));
+
+/* ---------- 成本模拟：全部默认关闭，由用户手动打开 ---------- */
+const SIM_DEF=()=>({subsidy:{on:false,v:.2},operation:{on:false,v:.35},management:{on:false,v:0},puhui:{on:false,v:1.044},w115:{on:false,v:.4},
+  w13:{on:false,base:0,v:.35},tongpiao:{on:false,v:.1},heavy:{on:false,base:0,target:0,rate:1,share:.4},idle:{on:false,target:0,v:.5},
+  custom:{on:false,v:.8},service:{on:false,v:2},addon:{on:false}});
+const SIM_META=[
+  ['subsidy','一客一价补贴','账单标记一客一价的运单，每票减'],['operation','操作成本','全部运单每票加'],['management','管理成本','全部运单每票加'],
+  ['puhui','新普惠返利','全部运单每票减（按日均件量对应档位）'],['w115','1–1.5kg 补贴','1–1.5kg 每票减'],['w13','1–3kg 超基数补贴','超过月基数的部分每票减，折算到全部 1–3kg'],
+  ['tongpiao','通票扣减','全部运单每票加'],['heavy','重货考核','3kg 以上：不足基数每 kg 罚，超过基数按中转费单价 × 40% 奖励'],['idle','市场闲置费','件量低于指标时每差 1 票罚'],
+  ['custom','返利（手工）','你之前手填的每票返利'],['service','售后客服成本','每单拦截 / 退改加'],['addon','退改附加成本摊入客户成本','把退改件账单、退件费、客服成本摊到客户每票']];
+const TIERS=[[0,2,.31],[2,4,.305],[4,6,.29],[6,8,.285],[8,10,.28],[10,12,.275],[12,14,.27],[14,16,.265],[16,null,.26]];
+const st={cmpPeriod:null,cellSub:'share',sim:SIM_DEF(),simOpen:false,unit:'share',colorMode:'cost',page:'analysis',sel:new Set([DEFAULT]),level:'province',expand:false,showAll:false,base:'network',cmpBand:null,
+  q:{target:'',basis:'sel',sub:'',addon:false,mode:'percent',value:20,over:{}},drawer:null,switches:{no_fee:true,no_weight:true,no_dest:true,self_sign:true,return:true}};
+const $=s=>document.querySelector(s);
+const fmt=(v,d=2)=>v==null||!isFinite(v)?'—':v.toLocaleString('zh-CN',{minimumFractionDigits:d,maximumFractionDigits:d});
+const int=v=>Math.round(v).toLocaleString('zh-CN');
+const pct=(v,d=1)=>v==null||!isFinite(v)?'—':(v*100).toFixed(d)+'%';
+const qty=(n,tot)=>st.unit==='share'?pct(n/tot):int(n)+'票';
+const cellSub=(c,tot)=>st.cellSub==='weight'?(c.w?fmt(c.w/c.n,2)+'kg':'—'):st.cellSub==='count'?int(c.n)+'票':pct(c.n/tot);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- data cubes ---------- */
+// A: [cust, prov, w01(1..60), n, sw, fee, disp, tran, mf]
+const Z=()=>({n:0,w:0,fee:0,disp:0,tran:0,mf:0,sub:0});
+function addTo(a,r){a.n+=r[3];a.w+=r[4];a.fee+=r[5];a.disp+=r[6];a.tran+=r[7];a.mf+=r[8];a.sub+=r[9]||0}
+const NET={}; // NET[p][w01]
+for(const r of S.A){(NET[r[1]]??={});addTo(NET[r[1]][r[2]]??=Z(),r)}
+const CUBES=S.customers.map(()=>({}));for(const r of S.A){const cb=CUBES[r[0]];(cb[r[1]]??={});addTo(cb[r[1]][r[2]]??=Z(),r)}
+function cube(sel){if(sel.size===1)return CUBES[[...sel][0]];if(sel.size===NC)return NET;const o={};for(const i of sel)for(const p in CUBES[i])for(const u in CUBES[i][p]){(o[p]??={});const a=(o[p][u]??=Z()),x=CUBES[i][p][u];a.n+=x.n;a.w+=x.w;a.fee+=x.fee;a.disp+=x.disp;a.tran+=x.tran;a.mf+=x.mf;a.sub+=x.sub}return o}
+function sumUnits(cp,units){const a=Z();if(!cp)return a;for(const u of units){const x=cp[u];if(x){a.n+=x.n;a.w+=x.w;a.fee+=x.fee;a.disp+=x.disp;a.tran+=x.tran;a.mf+=x.mf;a.sub+=x.sub||0}}return a}
+function total(cb){const a=Z();for(const p in cb)for(const u in cb[p]){const x=cb[p][u];a.n+=x.n;a.w+=x.w;a.fee+=x.fee;a.disp+=x.disp;a.tran+=x.tran;a.mf+=x.mf}return a}
+function dist01(cb){const d=new Array(61).fill(0).map(Z);for(const p in cb)for(const u in cb[p]){const x=cb[p][u],a=d[u];a.n+=x.n;a.w+=x.w;a.fee+=x.fee;a.disp+=x.disp;a.tran+=x.tran;a.mf+=x.mf}return d}
+// city cube from C: [cust, city, b05(1..12), n, fee]
+function cityCube(sel){const o={};for(const r of S.C)if(sel.has(r[0])){(o[r[1]]??={});const a=(o[r[1]][r[2]]??=Z());a.n+=r[3];a.fee+=r[4]}return o}
+const CITYNET=cityCube(new Set(S.customers.map((_,i)=>i)));
+
+/* ---------- smart bands ---------- */
+function smartBands(d,expand){
+  const tot=d.reduce((s,x)=>s+x.n,0)||1;
+  const b05=[];for(let b=1;b<=12;b++){const units=[];for(let u=(b-1)*5+1;u<=Math.min(b*5,60);u++)units.push(u);if(b===12)for(let u=56;u<=60;u++)if(!units.includes(u))units.push(u);
+    b05.push({lo:(b-1)*.5,hi:b===12?99:b*.5,units,n:units.reduce((s,u)=>s+d[u].n,0)})}
+  let i=0,j=b05.length-1;
+  while(i<j&&b05[i].n/tot<.02)i++;
+  while(j>i&&b05[j].n/tot<.02)j--;
+  const out=[];
+  if(i>0){const m=b05.slice(0,i);out.push({lo:0,hi:b05[i-1].hi,units:m.flatMap(x=>x.units),n:m.reduce((s,x)=>s+x.n,0),merged:'low'})}
+  for(let k=i;k<=j;k++)out.push({...b05[k]});
+  if(j<b05.length-1){const m=b05.slice(j+1);out.push({lo:b05[j+1].lo,hi:99,units:m.flatMap(x=>x.units),n:m.reduce((s,x)=>s+x.n,0),merged:'high'})}
+  for(const b of out){b.share=b.n/tot;b.cls=b.share>=.4?'main':b.share>=.1?'sub':'low';b.label=b.merged==='low'?`≤${b.hi}kg`:b.hi>=99?`${b.lo}kg以上`:`${b.lo}–${b.hi}kg`}
+  if(!expand)return out;
+  return out.flatMap(b=>b.cls!=='main'?[b]:b.units.filter(u=>d[u].n>0).map(u=>({lo:(u-1)/10,hi:u/10,units:[u],n:d[u].n,share:d[u].n/tot,cls:'main',fine:true,label:`${((u-1)/10).toFixed(1)}–${(u/10).toFixed(1)}`})));
+}
+const bandOf=(bands,u)=>bands.findIndex(b=>b.units.includes(u));
+const isAll=()=>st.sel.size===NC;
+const colorOf=i=>{const k=[...st.sel].indexOf(i);return CC[(k<0?i:k)%CC.length]};
+const selName=()=>isAll()?'全部客户':[...st.sel].map(i=>S.customers[i]).join('、');
+
+/* ---------- metrics ---------- */
+const netCell=(p,units)=>sumUnits(NET[p],units);
+// Network cost at this cell's own 0.1kg weight mix, so a lighter mix inside a band is not mistaken for a lower price.
+function refFor(cp,np,units){const band=sumUnits(np,units);const ba=k=>band.n?band[k]/band.n:null;const o={n:band.n,fee:0,disp:0,tran:0,mf:0,cn:0};
+  for(const u of units){const c=cp?.[u];if(!c||!c.n)continue;const r=np?.[u],ok=r&&r.n>=5;if(!ok&&!band.n)continue;o.cn+=c.n;for(const k of ['fee','disp','tran','mf'])o[k]+=c.n*(ok?r[k]/r.n:ba(k))}
+  if(!o.cn)return {n:band.n,avg:null};return {n:band.n,avg:o.fee/o.cn,disp:o.disp/o.cn,tran:o.tran/o.cn,mf:o.mf/o.cn}}
+function b05Units(b){const u=[];for(let x=(b-1)*5+1;x<=Math.min(b*5,60);x++)u.push(x);return u}
+function equivalent(cb){ // network cost for the same province × 0.1kg mix
+  let n=0,e=0;for(const p in cb)for(let b=1;b<=12;b++){const units=b05Units(b),c=sumUnits(cb[p],units);if(!c.n)continue;const r=refFor(cb[p],NET[p],units);if(r.avg!=null){n+=c.n;e+=c.n*r.avg}}
+  return n?e/n:null}
+function critical(cb){ // tickets within 0.1kg above a billing step, valued with same-province network jump
+  let n=0,save=0,detail=[];
+  for(const [s] of S.steps){const u=Math.round(s*10)+1;let sn=0,ss=0;
+    for(const p in cb){const x=cb[p][u];if(!x)continue;const hi=NET[p]?.[u],lo=NET[p]?.[u-1];
+      const j=(hi&&lo&&hi.n>=10&&lo.n>=10)?hi.fee/hi.n-lo.fee/lo.n:(S.steps.find(z=>z[0]===s)[1]);sn+=x.n;ss+=x.n*Math.max(0,j)}
+    n+=sn;save+=ss;detail.push({step:s,n:sn,save:ss})}
+  return {n,save,detail}}
+function customerStats(i){const cb=CUBES[i],t=total(cb),eq=equivalent(cb),cr=critical(cb),d=dist01(cb),bands=smartBands(d,false);
+  const main=bands.filter(b=>b.cls==='main').map(b=>b.label).join(' + ')||bands.slice().sort((a,b)=>b.n-a.n)[0].label;
+  return {i,name:S.customers[i],cb,t,avg:t.fee/t.n,avgW:t.w/t.n,eq,gap:t.fee/t.n-eq,cr,d,bands,main}}
+const STATS=S.customers.map((_,i)=>customerStats(i));
+const NETT=total(NET);
+const NET_RET_RATE=(()=>{let n=0,r=0;for(const x of S.RET){n+=x[1];r+=x[2]}return n?r/n:0})();
+const tip=t=>`<span class="tip" tabindex="0" title="${esc(t)}" aria-label="${esc(t)}">?</span>`;
+const ACTIVE={};for(const r of S.D){if(r[2]>0)(ACTIVE[r[0]]??=new Set()).add(r[1])}
+const activeDays=sel=>{if(sel.size===NC)return NDAYS;const u=new Set();for(const i of sel)for(const d of ACTIVE[i]||[])u.add(d);return u.size||1};
+const H=window.HIST,PREV=H?H.months[0]:null,CUR=H?H.months[H.months.length-1]:null;
+function histOf(sel,m){ // n, days, w, fee, crit, b05[12] for a selection in month m
+  if(sel.size===NC){const x=H.net[m];return {n:x[0],w:x[1],fee:x[2],crit:x[3],b:x.slice(4),days:H.days[m]}}
+  const o={n:0,w:0,fee:0,crit:0,b:new Array(12).fill(0),days:0};const ds=[];
+  for(const r of H.rows)if(r[1]===m&&sel.has(r[0])){o.n+=r[2];ds.push(r[3]);o.w+=r[4];o.fee+=r[5];o.crit+=r[6];for(let k=0;k<12;k++)o.b[k]+=r[7+k]}
+  o.days=Math.max(0,...ds)||0;return o}
+const chg=(a,b,mode='pct')=>{if(a==null||b==null||!isFinite(a)||!isFinite(b)||(mode==='pct'&&!b))return '<span class="hint">—</span>';const d=mode==='pct'?a/b-1:a-b;
+  const cls=Math.abs(d)<(mode==='pct'?.005:mode==='pp'?.05:.0005)?'':d>0?'up':'down';
+  const txt=mode==='pct'?(Math.abs(d)*100).toFixed(1)+'%':mode==='pp'?Math.abs(d).toFixed(1)+' 个百分点':fmt(Math.abs(d),3);return `<span class="${cls}">${d>0?'+':d<0?'−':''}${txt}</span>`};
+const MIN_PREV=300; // a previous period below this many tickets is too small to compare
+const NDAYS=Math.round((new Date(S.dates[1])-new Date(S.dates[0]))/864e5)+1;
+function simConst(){ // network-level figures needed by the formula items
+  const sm=st.sim;let n13=0,n3=0,w3=0,t3=0;for(const p in NET)for(const u in NET[p]){const x=NET[p][u];if(u>=11&&u<=30)n13+=x.n;if(u>=31){n3+=x.n;w3+=x.w;t3+=x.tran}}
+  const w13=n13?Math.max(0,n13-sm.w13.base)*sm.w13.v/n13:0;
+  const h=sm.heavy,heavyAmt=w3<h.base?-(h.base-w3)*h.rate:(w3-h.base)*(w3?t3/w3:0)*h.share; // >0 reward, <0 penalty
+  const idle=Math.max(0,sm.idle.target-NETT.n)*sm.idle.v/NETT.n;
+  return {w13,heavy:n3?-heavyAmt/n3:0,idle,w3,heavyAmt}}
+function itemPerU(k,u,K){const m=st.sim[k];if(!m.on)return 0;u=+u;
+  switch(k){case 'operation':case 'management':case 'tongpiao':return m.v;case 'puhui':return -m.v;case 'custom':return -m.v;
+    case 'w115':return u>=11&&u<=15?-m.v:0;case 'w13':return u>=11&&u<=30?-K.w13:0;case 'heavy':return u>=31?K.heavy:0;case 'idle':return K.idle;default:return 0}}
+const PER_U_KEYS=['operation','management','tongpiao','puhui','custom','w115','w13','heavy','idle'];
+function simAdj(cp,units,K,only){let a=0;if(!cp)return 0;for(const u of units){const x=cp[u];if(!x)continue;for(const k of only||PER_U_KEYS)a+=x.n*itemPerU(k,u,K);
+  if((!only||only.includes('subsidy'))&&st.sim.subsidy.on)a-=st.sim.subsidy.v*(x.sub||0)}return a}
+const ALLU=[...Array(60).keys()].map(i=>i+1);
+function simAdjCube(cb,K,only){let a=0;for(const p in cb)a+=simAdj(cb[p],ALLU,K,only);return a}
+const simCount=()=>Object.values(st.sim).filter(x=>x.on).length;
+/* 售后：拦截 / 退件 / 退改 */
+const RETM={};for(const r of S.RET)RETM[r[0]]=r;
+function retOf(sel){const o={n:0,rn:0,n1:0,n2:0,n3:0,rfee:0,rbill:0};for(const i of sel){const r=RETM[i];if(!r)continue;o.n+=r[1];o.rn+=r[2];o.n1+=r[3];o.n2+=r[4];o.n3+=r[5];o.rfee+=r[6];o.rbill+=r[7]}
+  o.service=st.sim.service.on?st.sim.service.v*o.rn:0;o.total=o.rfee+o.rbill+o.service;o.rate=o.n?o.rn/o.n:0;return o}
+const ALLSEL=new Set(S.customers.map((_,i)=>i));
+const NETRET=()=>retOf(ALLSEL);
+const withSim=(c,cp,units,K,addonPer)=>({...c,sys:c.fee,fee:c.fee+simAdj(cp,units,K)+(addonPer||0)*c.n});
+const REGION={'华东':['上海','江苏省','浙江省','安徽省'],'华南':['广东省','福建省','广西壮族自治区','海南省'],'华北':['北京','天津','河北省','山西省','内蒙古自治区','山东省'],
+  '华中':['河南省','湖北省','湖南省','江西省'],'西南':['四川省','重庆','云南省','贵州省','西藏自治区'],'西北':['陕西省','甘肃省','宁夏回族自治区','青海省','新疆维吾尔自治区'],'东北':['辽宁省','吉林省','黑龙江省']};
+const regionOf=name=>Object.keys(REGION).find(r=>REGION[r].includes(name))||'其他';
+const NETR={};for(const p in NET){const r=regionOf(S.provinces[p]);NETR[r]=(NETR[r]||0)+total({[p]:NET[p]}).n/NETT.n}
+const FLOW_TILT=.06; // a region share this much above the network's marks the customer's flow as tilted toward it
+const short=n=>n.replace(/省|市|壮族自治区|回族自治区|维吾尔自治区|自治区/g,'');
+function shape(s){ // weight shares by 0.5kg band, flow shares by province, plus readable class labels
+  const tot=s.t.n,wb=new Array(13).fill(0);for(let u=1;u<=60;u++)wb[Math.min(12,Math.ceil(u/5))]+=s.d[u].n/tot;
+  const fp={};for(const p in s.cb)fp[p]=total({[p]:s.cb[p]}).n/tot;
+  const rs={};for(const p in fp){const r=regionOf(S.provinces[p]);rs[r]=(rs[r]||0)+fp[p]}
+  const bl=b=>b===1?'≤0.5kg':`${(b-1)*.5}–${b*.5}kg`;let top=1;for(let b=2;b<=12;b++)if(wb[b]>wb[top])top=b;
+  let wlabel;if(wb[top]>=.6)wlabel=bl(top)+' 集中';else{let best=0,bi=1;for(let b=1;b<12;b++)if(wb[b]+wb[b+1]>best){best=wb[b]+wb[b+1];bi=b}wlabel=best>=.7?`${(bi-1)*.5}–${(bi+1)*.5}kg 双主要`:'重量分散'}
+  const tp=Object.keys(fp).sort((a,b)=>fp[b]-fp[a]),tr=Object.keys(rs).sort((a,b)=>rs[b]-rs[a]);
+  let tilt=null,tv=0;for(const r in rs){const d=rs[r]-(NETR[r]||0);if(d>tv){tv=d;tilt=r}}
+  const flabel=fp[tp[0]]>=.35?short(S.provinces[tp[0]])+'为主':tv>=FLOW_TILT?'偏'+tilt:'流向均衡';
+  return {wb,fp,wlabel,flabel,topProv:tp.slice(0,3)}}
+for(const s of STATS){Object.assign(s,shape(s));s.key=s.wlabel+' · '+s.flabel;const r=RETM[s.i];s.retRate=r&&r[1]?r[2]/r[1]:0;s.retCost=r?(r[6]+r[7])/s.t.n:0}
+const GROUPS=(()=>{const m=new Map();for(const s of STATS){if(s.t.n<MIN_GROUP_N)continue;if(!m.has(s.key))m.set(s.key,{key:s.key,wlabel:s.wlabel,flabel:s.flabel,members:[]});m.get(s.key).members.push(s.i)}
+  const g=[...m.values()];for(const x of g){x.members.sort((a,b)=>STATS[b].t.n-STATS[a].t.n);x.n=x.members.reduce((t,i)=>t+STATS[i].t.n,0);x.fee=x.members.reduce((t,i)=>t+STATS[i].t.fee,0)}
+  return g.sort((a,b)=>b.n-a.n)})();
+function similarity(a,b){let w=0;for(let k=1;k<=12;k++)w+=Math.min(a.wb[k],b.wb[k]);let f=0;for(const p in a.fp)f+=Math.min(a.fp[p],b.fp[p]||0);return .5*w+.5*f}
+function similarTo(i,k=5){const a=STATS[i];return STATS.filter(s=>s.i!==i&&s.t.n>=MIN_GROUP_N).map(s=>({s,sim:similarity(a,s)})).sort((x,y)=>y.sim-x.sim).slice(0,k)}
+
+/* ---------- colors ---------- */
+function costClass(avg,ref,n,refN){if(n<30)return 'small';if(!ref||refN<30)return 'n0';const d=avg/ref-1;return d<=-.05?'g2':d<=-.02?'g1':d<.02?'n0':d<.05?'r1':'r2'}
+
+/* ---------- SVG charts ---------- */
+function nice(lo,hi,count=4){const raw=(hi-lo)/count,mag=10**Math.floor(Math.log10(raw)),step=[1,2,2.5,5,10].map(m=>m*mag).find(s=>s>=raw);const a=Math.floor(lo/step)*step,b=Math.ceil(hi/step)*step;const t=[];for(let v=a;v<=b+step/2;v+=step)t.push(+v.toFixed(6));return {lo:a,hi:b,ticks:t}}
+function rangeU(d){const tot=d.reduce((s,x)=>s+x.n,0);let c=0;for(let u=1;u<=60;u++){c+=d[u].n;if(c>=tot*.995)return Math.max(20,Math.min(60,Math.ceil((u+2)/5)*5))}return 30}
+function distChart(d,netd,bands,opts={}){
+  const W=1180,H=300,L=46,R=52,T=24,B=40,maxU=opts.maxU||rangeU(d);
+  const iw=W-L-R,ih=H-T-B,bw=iw/maxU;
+  const tot=d.reduce((s,x)=>s+x.n,0)||1, shares=d.map(x=>st.unit==='share'?x.n/tot:x.n);
+  const sy=nice(0,Math.max(...shares.slice(1,maxU+1)),4),ymax=sy.hi;
+  const yl=v=>st.unit==='share'?+(v*100).toFixed(1)+'%':v>=10000?+(v/10000).toFixed(1)+'万':int(v);
+  const costs=[];for(let u=1;u<=maxU;u++){if(d[u].n>=30)costs.push(d[u].fee/d[u].n);if(netd[u].n>=30)costs.push(netd[u].fee/netd[u].n)}
+  const cy=nice(Math.min(...costs),Math.max(...costs),4),cmin=cy.lo,cmax=cy.hi;
+  const x=u=>L+(u-1)*bw, ys=v=>T+ih-(v/ymax)*ih, yc=v=>T+ih-((v-cmin)/(cmax-cmin))*ih;
+  let g='';
+  for(const v of sy.ticks){const y=ys(v);g+=`<line x1="${L}" x2="${W-R}" y1="${y}" y2="${y}" stroke="var(--line2)"/><text x="${L-6}" y="${y+4}" text-anchor="end">${yl(v)}</text>`}
+  for(const c of cy.ticks)g+=`<text x="${W-R+6}" y="${yc(c)+4}">${c.toFixed(2)}</text>`;
+  for(let u=1;u<=maxU;u++){const b=bandOf(bands,u),cls=b>=0?bands[b].cls:'low',h=ih-(ys(shares[u])-T);
+    g+=`<rect x="${x(u)+1}" y="${ys(shares[u])}" width="${bw-2}" height="${Math.max(0,h)}" class="b-${cls}" rx="2"><title>${((u-1)/10).toFixed(1)}–${(u/10).toFixed(1)}kg：${int(d[u].n)}票，占${pct(d[u].n/tot)}${d[u].n?'，单票'+fmt(d[u].fee/d[u].n)+'元':''}</title></rect>`;
+    if(u%5===0)g+=`<text x="${x(u)+bw}" y="${H-B+16}" text-anchor="middle">${(u/10).toFixed(1)}</text>`}
+  g+=`<text x="${L}" y="${H-B+16}" text-anchor="middle">0</text><text x="${W-R}" y="${H-6}" text-anchor="end" class="lbl">结算重量 kg</text>`;
+  for(const [s,j] of S.steps){if(s*10>maxU)continue;const xx=L+s*10*bw;g+=`<line x1="${xx}" x2="${xx}" y1="${T-6}" y2="${T+ih}" stroke="var(--warn)" stroke-dasharray="4 3"/><text x="${xx+4}" y="${T+4}" style="fill:var(--warn)">档位 ${s}kg · +${j.toFixed(2)}元</text>`}
+  const line=(dd,minN)=>{let p='',prev=-9;for(let u=1;u<=maxU;u++){if(dd[u].n<minN)continue;p+=(u===prev+1?'L':'M')+(x(u)+bw/2).toFixed(1)+','+yc(dd[u].fee/dd[u].n).toFixed(1);prev=u}return p};
+  if(!isAll())g+=`<path d="${line(netd,30)}" fill="none" stroke="var(--ink3)" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+  g+=`<path d="${line(d,30)}" fill="none" stroke="var(--r2)" stroke-width="2.2"/>`;
+  for(let u=1;u<=maxU;u++)if(d[u].n>=30)g+=`<circle cx="${x(u)+bw/2}" cy="${yc(d[u].fee/d[u].n)}" r="2.6" fill="var(--r2)"/>`;
+  g+=`<text x="${L-6}" y="${T-10}" text-anchor="end" class="lbl">${st.unit==='share'?'票量占比':'票数'}</text><text x="${W-R+6}" y="${T-10}" class="lbl">单票成本 元</text>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="重量分布与单票成本">${g}</svg>`}
+
+function overlayChart(list,maxU=Math.max(...list.map(s=>rangeU(s.d)))){
+  const W=1180,H=260,L=46,R=20,T=18,B=36,iw=W-L-R,ih=H-T-B,bw=iw/maxU;
+  const series=list.map(s=>{const tot=s.t.n;return s.d.map(x=>x.n/tot)});
+  const sy=nice(0,Math.max(...series.flatMap(a=>a.slice(1,maxU+1))),4),ymax=sy.hi;
+  const x=u=>L+(u-.5)*bw,y=v=>T+ih-(v/ymax)*ih;let g='';
+  for(const v of sy.ticks)g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line2)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${+(v*100).toFixed(1)}%</text>`;
+  for(let u=5;u<=maxU;u+=5)g+=`<text x="${L+u*bw}" y="${H-B+16}" text-anchor="middle">${(u/10).toFixed(1)}</text>`;
+  for(const [s] of S.steps){if(s*10>maxU)continue;const xx=L+s*10*bw;g+=`<line x1="${xx}" x2="${xx}" y1="${T}" y2="${T+ih}" stroke="var(--warn)" stroke-dasharray="4 3"/><text x="${xx+4}" y="${T+10}" style="fill:var(--warn)">${s}kg</text>`}
+  list.forEach((s,k)=>{let p='';for(let u=1;u<=maxU;u++)p+=(p?'L':'M')+x(u).toFixed(1)+','+y(series[k][u]).toFixed(1);g+=`<path d="${p}" fill="none" stroke="${colorOf(s.i)}" stroke-width="2.2"/>`});
+  g+=`<text x="${W-R}" y="${H-4}" text-anchor="end" class="lbl">结算重量 kg</text>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="客户重量分布对比">${g}</svg>`}
+
+function waterfall(steps){ // [{label,v,kind:'base'|'delta'|'end'}]
+  const W=560,H=250,L=44,R=12,T=16,B=48,iw=W-L-R,ih=H-T-B;
+  let run=0;const bars=steps.map(s=>{if(s.kind==='base'){run=s.v;return {...s,a:0,b:s.v}}if(s.kind==='end')return {...s,a:0,b:s.v};const a=run;run+=s.v;return {...s,a,b:run}});
+  const vals=bars.flatMap(b=>b.kind==='delta'?[b.a,b.b]:[b.b]);const ax=nice(Math.max(0,Math.min(...vals)-.3),Math.max(...vals),4),vmin=ax.lo,hi=ax.hi;
+  const y=v=>T+ih-((v-vmin)/(hi-vmin))*ih,bw=iw/bars.length;let g='';
+  for(const v of ax.ticks)g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line2)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${v.toFixed(2)}</text>`;
+  bars.forEach((b,k)=>{const top=y(Math.max(b.a,b.b)),bot=y(b.kind==='delta'?Math.min(b.a,b.b):vmin);const col=b.kind!=='delta'?'var(--c-sub)':b.v>=0?'var(--r2)':'var(--g2)';
+    g+=`<rect x="${L+k*bw+bw*.18}" y="${top}" width="${bw*.64}" height="${Math.max(1,bot-top)}" fill="${col}" rx="3"/>`;
+    const t=b.kind==='delta'?(b.v>=0?'+':'')+b.v.toFixed(3):b.v.toFixed(3);
+    g+=`<text x="${L+k*bw+bw/2}" y="${top-5}" text-anchor="middle" class="lbl">${t}</text><text x="${L+k*bw+bw/2}" y="${H-B+16}" text-anchor="middle" class="lbl">${esc(b.label)}</text>`});
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="成本差异分解">${g}</svg>`}
+
+/* ---------- comparison math ---------- */
+function decompose(A,Bcb){ // avgA − avgB = weight structure + flow structure + same-cell price, priced with network (province × 0.1kg)
+  const r=(p,u)=>{const x=NET[p]?.[u];if(x&&x.n>=5)return x.fee/x.n;const b=netCell(p,b05Units(Math.min(12,Math.ceil(u/5))));return b.n?b.fee/b.n:null};
+  const scan=cb=>{let n=0,fee=0,E=0;const byU={},rU={};for(const p in cb)for(const u in cb[p]){const c=cb[p][u],rr=r(p,u);if(!c.n||rr==null)continue;n+=c.n;fee+=c.fee;E+=c.n*rr;byU[u]=(byU[u]||0)+c.n;rU[u]=(rU[u]||0)+c.n*rr}return {n,avg:fee/n,E:E/n,byU,rU}};
+  const a=scan(A),b=scan(Bcb);
+  const uRate=u=>b.rU[u]!=null?b.rU[u]/b.byU[u]:(()=>{let n=0,e=0;for(const p in NET){const x=NET[p][u];if(x){n+=x.n;e+=x.fee}}return n?e/n:0})();
+  let wMix=0;for(const u in a.byU)wMix+=a.byU[u]/a.n*uRate(u);
+  return {avgA:a.avg,avgB:b.avg,weight:wMix-b.E,flow:a.E-wMix,price:(a.avg-a.E)-(b.avg-b.E)}}
+/* ---------- pages ---------- */
+function scopeBar(){
+  const chips=isAll()?'':[...st.sel].map(i=>`<span class="chip on"><span class="dot" style="background:${colorOf(i)}"></span>${esc(S.customers[i])}${st.sel.size>1?`<button class="x" data-remove="${i}" aria-label="移除${esc(S.customers[i])}">×</button>`:''}</span>`).join('');
+  return `<section class="panel"><div class="scope">
+    <div class="field" style="flex:1 1 560px"><span class="lab">客户（输入名称添加，可多选；选 2 个以上自动对比，最多 ${MAX_CMP} 个）</span><div class="chips"><button class="chip all" data-cust="all" aria-pressed="${isAll()}">全部客户 · 网点汇总</button>${chips}<div class="combo"><input id="custSearch" class="search" role="combobox" aria-expanded="false" aria-controls="custList" aria-autocomplete="list" placeholder="+ 搜索添加客户（共 ${NC} 个）" autocomplete="off"><div id="custList" class="combo-list" role="listbox" hidden></div></div></div></div>
+    <div class="field"><span class="lab">日期（寄件）</span><div class="seg"><button aria-pressed="true">本次导入 ${S.dates[0].slice(5).replace('-','/')}–${S.dates[1].slice(5).replace('-','/')}</button><button aria-pressed="false">近 7 天</button><button aria-pressed="false">本月</button><button aria-pressed="false">自定义</button></div></div>
+    <div class="field"><span class="lab">对比期间</span><div class="seg"><button data-cmpp="" aria-pressed="${!st.cmpPeriod}">不对比</button><button data-cmpp="${PREV}" aria-pressed="${!!st.cmpPeriod}">对比 ${+PREV.slice(5)} 月</button></div></div>
+    <div class="field"><span class="lab">附加费用与政策</span><button class="btn ${simCount()?'primary':''}" data-sim="open">成本模拟 · 已开 ${simCount()} 项</button></div>
+    <div class="field"><span class="lab">流向</span><div class="seg" id="levelSeg"><button data-level="province" aria-pressed="${st.level==='province'}">省</button><button data-level="city" aria-pressed="${st.level==='city'}">市</button></div></div>
+  </div></section>`}
+
+function analysisPage(){
+  const cb=cube(st.sel),t=total(cb),d=dist01(cb),netd=dist01(NET);
+  const bandsBase=smartBands(d,false),bands=st.level==='province'?smartBands(d,st.expand):bandsBase;
+  const K=simConst(),ret=retOf(st.sel),addonPer=st.sim.addon.on&&t.n?ret.total/t.n:0;
+  const R=-(simAdjCube(cb,K)+addonPer*t.n),eqSys=equivalent(cb),cr=critical(cb),avg=(t.fee-R)/t.n,gap=t.fee/t.n-eqSys,eq=eqSys-R/t.n,tAdj={...t,fee:t.fee-R},net=NETRET();
+  const spec=S.K.filter(r=>st.sel.has(r[0])).reduce((s,r)=>s+r[2],0);
+  const mainB=bandsBase.filter(b=>b.cls==='main');
+  const days=activeDays(st.sel),hp=st.cmpPeriod?histOf(st.sel,st.cmpPeriod):null,hc=st.cmpPeriod?histOf(st.sel,CUR):null;
+  const small=hp&&hp.n<MIN_PREV;
+  const dl=(v)=>hp?`<span class="delta">${small?`上期仅 ${int(hp.n)} 票，不比较`:`较 ${+st.cmpPeriod.slice(5)} 月 ${v}`}</span>`:'';
+  const kpis=`<section class="kpis" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+    <div class="kpi"><span class="k">正常件票数</span><span class="v num">${int(t.n)}</span><span class="s">${esc(selName().length>14?st.sel.size+' 个客户':selName())}</span>${dl(hp?chg(hc.n,hp.n):'')}</div>
+    <div class="kpi"><span class="k">日均发件量 ${tip(isAll()?'票数 ÷ 统计天数（自然日）':'票数 ÷ 有发货的天数')}</span><span class="v num">${int(t.n/days)}</span><span class="s">${isAll()?`统计 ${NDAYS} 天`:`发货 ${days}/${NDAYS} 天`}</span>${dl(hp&&hp.days?chg(hc.n/hc.days,hp.n/hp.days):'')}</div>
+    <div class="kpi"><span class="k">平均结算重量</span><span class="v num">${fmt(t.w/t.n,2)}<small> kg</small></span><span class="s">主要重量 ${mainB.map(b=>b.label).join('、')||'—'}</span>${dl(hp?chg(hc.w/hc.n,hp.w/hp.n,'abs')+' kg':'')}</div>
+    <div class="kpi"><span class="k">单票实际成本 ${tip('账单费用 ± 已开启的成本模拟项，元/票')}</span><span class="v num">${fmt(avg,3)}</span><span class="s">${simCount()?`账单 ${fmt(t.fee/t.n,3)} · 模拟 ${R>0?'−':'+'}${fmt(Math.abs(R)/t.n,3)}（${simCount()} 项）`:'账单费用，未开模拟项'}</span>${dl(hp?chg(hc.fee/hc.n,hp.fee/hp.n,'abs')+' 元（账单）':'')}</div>
+    <div class="kpi"><span class="k">网点同类件成本 ${tip('按这个客户的目的地和重量分布，换成网点平均价算出的单票成本')}</span><span class="v num">${isAll()?'—':fmt(eq,3)}</span><span class="s">${isAll()?'当前即网点汇总':'同流向同重量段网点均价'}</span></div>
+    <div class="kpi"><span class="k">比网点贵 / 便宜 ${tip('同目的地、同重量的件，比网点平均每票贵（+）或便宜（−）多少，按账单费用比较')}</span><span class="v num ${gap>0.005?'up':gap<-0.005?'down':''}">${isAll()?'—':(gap>=0?'+':'')+fmt(gap,3)}</span><span class="s">${isAll()?'—':gap>0.005?'比网点贵':gap<-0.005?'比网点便宜':'与网点持平'}</span></div>
+    <div class="kpi"><span class="k">退改率 ${tip('拦截、退件、退改的票数 ÷ 全部票数')}</span><span class="v num ${ret.rate>net.rate*1.5?'up':''}">${pct(ret.rate,2)}</span><span class="s">网点 ${pct(net.rate,2)} · 附加 ${fmt(ret.total/t.n,3)} 元/票</span></div>
+    <div class="kpi alert"><span class="k">刚超档的件 ${tip('重量刚超过 0.5 / 1 / 2kg 计费档 0.1kg 以内的件；控制在档内每票能少付的钱')}</span><span class="v num">${int(cr.n)}</span><span class="s">占 ${pct(cr.n/t.n)} · 多付约 ${int(cr.save)} 元</span>${dl(hp?chg(hc.crit/hc.n*100,hp.crit/hp.n*100,'pp'):'')}</div>
+  </section>`;
+  // insights
+  const top=bandsBase.slice().sort((a,b)=>b.n-a.n)[0];
+  const worst=cr.detail.slice().sort((a,b)=>b.save-a.save)[0];
+  const ins=`<section class="insights">
+    <div class="ins"><b>发货集中在 ${top.label}</b><p>占 ${pct(top.share)}；${mainB.length>1?'两个主要重量并存，报价需分段关注。':'报价和成本优化都以这一段为准。'}</p></div>
+    <div class="ins warn"><b>刚超 ${worst.step}kg 档的件 ${int(worst.n)} 票</b><p>${(worst.step).toFixed(1)}–${(worst.step+.1).toFixed(1)}kg 的件比 ${worst.step}kg 以内的每票多付约 ${fmt(worst.n?worst.save/worst.n:0,2)} 元，本期合计约 ${int(worst.save)} 元。</p></div>
+    <div class="ins"><b>${isAll()?'网点汇总视图':Math.abs(gap)<0.03?'价格与网点基本一致':gap>0?'同条件价差高于网点':'同条件价差低于网点'}</b><p>${isAll()?`共 ${int(t.n)} 票，另有 ${int(spec)} 票特殊件已隔离。`:`成本差异主要来自重量和流向结构；同流向同重量段单价差 ${(gap>=0?'+':'')+fmt(gap,3)} 元/票。已隔离特殊件 ${int(spec)} 票。`}</p></div>
+  </section>`;
+  // chart
+  const legendCls=`<span><i class="sw" style="background:var(--c-main)"></i>主要重量 ≥40%</span><span><i class="sw" style="background:var(--c-sub)"></i>次要段 10–40%</span><span><i class="sw" style="background:var(--c-low)"></i>少量 &lt;10%</span><span><i class="ln" style="border-color:var(--r2)"></i>单票成本</span>${isAll()?'':'<span><i class="ln" style="border-color:var(--ink3);border-top-style:dashed"></i>网点同重量成本</span>'}<span><i class="ln" style="border-color:var(--warn);border-top-style:dashed"></i>计费档位</span>`;
+  const chart=`<section class="panel"><div class="panel-head"><h2>重量分布与成本</h2><span class="hint">每根柱 0.1kg；颜色表示所在重量段的集中程度</span><div class="seg" style="margin-left:auto"><button data-unit="share" aria-pressed="${st.unit==='share'}">占比</button><button data-unit="count" aria-pressed="${st.unit==='count'}">票量</button></div></div>${distChart(d,netd,bandsBase)}<div class="legend">${legendCls}</div></section>`;
+  // heat table
+  const heat=heatTable(cb,bands,tAdj);
+  if(st.sel.size>=2&&!isAll())return scopeBar()+kpis+historyPanel()+comparePage()+afterSalesPanel()+heat.replace('<h2>重量段 × 流向成本</h2>','<h2>合并后的重量段 × 流向成本</h2>');
+  if(isAll())return scopeBar()+kpis+ins+historyPanel()+groupPanel()+chart+heat+rankingTable();
+  return scopeBar()+kpis+ins+historyPanel()+afterSalesPanel()+similarPanel([...st.sel][0])+chart+heat}
+
+function heatTable(cb,bands,t){const K=simConst(),addonPer=st.sim.addon.on&&t.n?retOf(st.sel).total/total(cb).n:0;
+  const city=st.level==='city';
+  let rowsData=[];
+  if(!city){for(const p in cb){const cells=bands.map(b=>({c:withSim(sumUnits(cb[p],b.units),cb[p],b.units,K,addonPer),r:refFor(cb[p],NET[p],b.units)}));const tot=cells.reduce((s,x)=>s+x.c.n,0);if(tot)rowsData.push({key:p,name:S.provinces[p],cells,tot,fee:cells.reduce((s,x)=>s+x.c.fee,0)})}}
+  else{const cc=cityCube(st.sel);for(const k in cc){const cells=bands.map(b=>({c:withSim(sumUnits(cc[k],b.units),cc[k],b.units,K,addonPer),r:refFor(cc[k],CITYNET[k],b.units)}));const tot=cells.reduce((s,x)=>s+x.c.n,0);if(tot)rowsData.push({key:k,name:S.cities[k].split('/')[1]+'<small style="color:var(--ink3);font-weight:400"> '+S.cities[k].split('/')[0].replace(/省|自治区|壮族|回族|维吾尔/g,'')+'</small>',cells,tot,fee:cells.reduce((s,x)=>s+x.c.fee,0)})}}
+  rowsData.sort((a,b)=>b.tot-a.tot);
+  const limit=st.showAll?rowsData.length:12,shown=rowsData.slice(0,limit),rest=rowsData.slice(limit);
+  const allAvgs=rowsData.flatMap(r=>r.cells.filter(x=>x.c.n>=30).map(x=>x.c.fee/x.c.n)).sort((a,b)=>a-b);
+  const qv=k=>allAvgs.length?allAvgs[Math.min(allAvgs.length-1,Math.floor(k*allAvgs.length))]:0,cuts=[qv(.2),qv(.4),qv(.6),qv(.8)];
+  const costLevel=v=>'s'+(1+cuts.filter(c=>v>=c).length);
+  const cell=(x,j,rowKey)=>{const {c,r}=x;if(!c.n)return `<td class="c empty">·</td>`;const a=c.fee/c.n,ra=r.avg;
+    const dev=!isAll()&&ra&&c.n>=30&&r.n>=30?(c.sys/c.n)/ra-1:null;
+    const k=c.n<30?'small':st.colorMode==='network'&&!isAll()?costClass(c.sys/c.n,ra,c.n,r.n):costLevel(a);
+    const badge=dev!=null&&Math.abs(dev)>=.02&&st.colorMode==='cost'?`<span class="dv ${dev>0?'up':'down'}">${dev>0?'▲':'▼'}${Math.abs(dev*100).toFixed(0)}%</span>`:'';
+    const tip=`${c.n}票 · 单票 ${fmt(a,3)} 元`+(isAll()||!ra?'':` · 网点同类件 ${fmt(ra,3)} 元（${a>=ra?'+':''}${pct(a/ra-1)}）`)+(c.n<30?' · 样本少于30票':'');
+    return `<td class="c ${k} ${bands[j].cls==='main'?'mainc':''}" data-row="${esc(rowKey)}" data-band="${j}" title="${tip}">${badge}<span class="a num">${fmt(a,2)}</span><span class="m num">${cellSub(c,t.n)}</span></td>`};
+  const colW=bands.map(b=>{let n=0,w=0;for(const p in cb){const x=sumUnits(cb[p],b.units);n+=x.n;w+=x.w}return n?w/n:null});
+  const head=`<tr><th class="rowh">${city?'城市':'流向'}</th>${bands.map((b,bi)=>`<th><div class="bandh"><span class="bl num">${b.label}</span><span class="bw num">均重 ${colW[bi]!=null?fmt(colW[bi],2)+'kg':'—'}</span><span class="cls ${b.cls}">${b.cls==='main'?'主要':b.cls==='sub'?'次要':'少量'} ${pct(b.share,0)}</span><div class="bar"><i style="width:${Math.min(100,b.share*100/ Math.max(...bands.map(x=>x.share))*100/100)}%;background:var(--c-${b.cls})"></i></div></div></th>`).join('')}<th>合计</th></tr>`;
+  const body=shown.map(r=>`<tr><th class="rowh">${r.name}</th>${r.cells.map((x,j)=>cell(x,j,r.key)).join('')}<td class="tot num">${fmt(r.fee/r.tot,2)}<br><span class="hint">${qty(r.tot,t.n)}</span></td></tr>`).join('');
+  let foot='';
+  if(rest.length){const agg=bands.map((_,j)=>rest.reduce((a,r)=>{a.n+=r.cells[j].c.n;a.fee+=r.cells[j].c.fee;return a},{n:0,fee:0}));const tn=agg.reduce((s,x)=>s+x.n,0);
+    foot+=`<tr><th class="rowh">其余 ${rest.length} 个</th>${agg.map(a=>a.n?`<td class="c n0" style="cursor:default"><span class="a num">${fmt(a.fee/a.n,2)}</span><span class="m num">${qty(a.n,t.n)}</span></td>`:'<td class="c empty">·</td>').join('')}<td class="tot num">${fmt(rest.reduce((s,r)=>s+r.fee,0)/tn,2)}<br><span class="hint">${qty(tn,t.n)}</span></td></tr>`}
+  const colTot=bands.map((b,j)=>rowsData.reduce((a,r)=>{a.n+=r.cells[j].c.n;a.fee+=r.cells[j].c.fee;a.w+=r.cells[j].c.w||0;return a},{n:0,fee:0,w:0}));
+  foot+=`<tr class="foot"><th class="rowh">全部流向</th>${colTot.map(a=>a.n?`<td class="tot num" style="text-align:center"><b>${fmt(a.fee/a.n,2)}</b><br><span class="hint">${int(a.n)}票</span></td>`:'<td></td>').join('')}<td class="tot num"><b>${fmt(t.fee/t.n,2)}</b><br><span class="hint">${int(t.n)}票</span></td></tr>`;
+  const rng=[`< ${fmt(cuts[0],2)}`,`${fmt(cuts[0],2)}–${fmt(cuts[1],2)}`,`${fmt(cuts[1],2)}–${fmt(cuts[2],2)}`,`${fmt(cuts[2],2)}–${fmt(cuts[3],2)}`,`≥ ${fmt(cuts[3],2)}`];
+  const legend=st.colorMode==='cost'||isAll()?`<span>格子颜色 = 单票成本区间（元）：</span>${rng.map((t,i)=>`<span><i class="sw" style="background:var(--s${i+1});border:1px solid var(--line)"></i><span class="num">${t}</span></span>`).join('')}${isAll()?'':'<span><b class="up">▲</b>/<b class="down">▼</b> 比网点同类件贵 / 便宜 ≥2%</span>'}`
+    :`<span>格子颜色 = 与网点同流向、同重量分布的成本比较：</span><span><i class="sw" style="background:var(--g2)"></i>便宜 ≥5%</span><span><i class="sw" style="background:var(--g1)"></i>便宜 2–5%</span><span><i class="sw" style="background:var(--n0);border:1px solid var(--line)"></i>持平 ±2%</span><span><i class="sw" style="background:var(--r1)"></i>贵 2–5%</span><span><i class="sw" style="background:var(--r2)"></i>贵 ≥5%</span>`;
+  return `<section class="panel"><div class="panel-head"><h2>重量段 × 流向成本</h2><span class="hint">单票实际成本（元）· 小字为${st.cellSub==='share'?'票量占比':st.cellSub==='count'?'票数':'平均重量'} · 斜纹格不足 30 票 · 点格子看构成</span>
+    <span style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap"><div class="seg" aria-label="格子小字"><button data-csub="count" aria-pressed="${st.cellSub==='count'}">票量</button><button data-csub="share" aria-pressed="${st.cellSub==='share'}">占比</button><button data-csub="weight" aria-pressed="${st.cellSub==='weight'}">均重</button></div>${isAll()?'':`<div class="seg"><button data-color="cost" aria-pressed="${st.colorMode==='cost'}">颜色：成本区间</button><button data-color="network" aria-pressed="${st.colorMode==='network'}">颜色：与网点比</button></div>`}${st.level==='province'?`<button class="btn" id="expandBtn">${st.expand?'收起主要重量':'主要重量细分到 0.1kg'}</button>`:''}</span></div>
+    <div class="tw"><table class="heat"><thead>${head}</thead><tbody>${body}${foot}</tbody></table></div>
+    ${rest.length||st.showAll?`<button class="more" id="moreBtn">${st.showAll?'只看前 12 个':'展开全部 '+rowsData.length+' 个'+(city?'城市':'流向')}</button>`:''}
+    <div class="legend" style="margin-top:8px">${legend}</div></section>`}
+
+function comparePage(){
+  const list=[...st.sel].sort((a,b)=>a-b).map(i=>STATS[i]);
+  const ext=(k,fnBest)=>{const v=list.map(s=>s[k]);return {min:Math.min(...v),max:Math.max(...v)}};
+  const mark=(v,{min,max},lowGood=true)=>v===min?(lowGood?'best':'worst'):v===max?(lowGood?'worst':'best'):'';
+  const eAvg=ext('avg'),eGap=ext('gap'),eW=ext('avgW');const crs=list.map(s=>s.cr.n/s.t.n),eCr={min:Math.min(...crs),max:Math.max(...crs)};
+  const table=`<table class="list"><thead><tr><th>客户</th><th>票数</th><th>日均</th><th>均重 kg</th><th>主要重量</th><th>账单单票</th><th>网点同类件</th><th>比网点贵/便宜</th><th>刚超档</th><th>可省</th><th>退改率</th><th>附加成本/票</th></tr></thead><tbody>${list.map(s=>`<tr class="click" data-solo="${s.i}"><td><span class="dot" style="background:${colorOf(s.i)}"></span>${esc(s.name)}</td><td class="num">${int(s.t.n)}</td><td class="num">${int(s.t.n/activeDays(new Set([s.i])))}</td><td class="num">${fmt(s.avgW,2)}</td><td>${s.main}</td><td class="num ${mark(s.avg,eAvg)}">${fmt(s.avg,3)}</td><td class="num">${fmt(s.eq,3)}</td><td class="num ${mark(s.gap,eGap)}">${(s.gap>=0?'+':'')+fmt(s.gap,3)}</td><td class="num ${mark(s.cr.n/s.t.n,eCr)}">${pct(s.cr.n/s.t.n)}</td><td class="num">${int(s.cr.save)} 元</td><td class="num ${s.retRate>NETRET().rate*1.5?'worst':''}">${pct(s.retRate,2)}</td><td class="num">${fmt(s.retCost,3)}</td></tr>`).join('')}</tbody></table><p class="hint">点一行只看该客户。绿色 = 组内最好，红色 = 组内最差。“比网点贵/便宜”剔除了重量和流向结构的影响。</p>`;
+  // decomposition
+  const aIdx=st.cmpA!=null&&st.sel.has(st.cmpA)?st.cmpA:list[list.length>1?0:0].i;
+  const bKey=st.base==='network'||!st.sel.has(+st.base)||+st.base===aIdx?'network':+st.base;
+  const A=STATS[aIdx],dec=decompose(A.cb,bKey==='network'?NET:STATS[bKey].cb),bName=bKey==='network'?'网点整体':STATS[bKey].name;
+  const wf=waterfall([{label:bName.slice(0,6),v:dec.avgB,kind:'base'},{label:'重量结构',v:dec.weight,kind:'delta'},{label:'流向结构',v:dec.flow,kind:'delta'},{label:'同条件价差',v:dec.price,kind:'delta'},{label:A.name.slice(0,6),v:dec.avgA,kind:'end'}]);
+  const opt=(v,sel,txt)=>`<option value="${v}" ${sel?'selected':''}>${esc(txt)}</option>`;
+  const decPanel=`<div><div class="panel-head" style="margin-bottom:6px"><h2>差在哪里</h2><select id="cmpA" class="btn" style="font-weight:500">${list.map(s=>opt(s.i,s.i===aIdx,s.name)).join('')}</select><span class="hint">对比</span><select id="cmpB" class="btn" style="font-weight:500">${opt('network',bKey==='network','网点整体')}${list.filter(s=>s.i!==aIdx).map(s=>opt(s.i,s.i===bKey,s.name)).join('')}</select></div>${wf}
+    <p class="hint">${esc(A.name)} 比 ${esc(bName)} ${dec.avgA>=dec.avgB?'贵':'便宜'} ${fmt(Math.abs(dec.avgA-dec.avgB),3)} 元/票：重量结构 ${(dec.weight>=0?'+':'')+fmt(dec.weight,3)}，流向结构 ${(dec.flow>=0?'+':'')+fmt(dec.flow,3)}，同条件价差 ${(dec.price>=0?'+':'')+fmt(dec.price,3)}。</p></div>`;
+  // same-cell matrix for one band
+  const unionMain=[...new Set(list.flatMap(s=>s.bands.filter(b=>b.cls!=='low'&&!b.merged).map(b=>b.label)))];
+  const b05=[...Array(12).keys()].map(b=>({label:`${b*.5}–${(b+1)*.5}kg`,units:b05Units(b+1)}));
+  const cmpBand=st.cmpBand&&b05.find(b=>b.label===st.cmpBand)?st.cmpBand:(unionMain[0]||b05[1].label),band=b05.find(b=>b.label===cmpBand);
+  const provRank=Object.keys(NET).map(p=>({p,n:list.reduce((s,x)=>s+sumUnits(x.cb[p],band.units).n,0)})).filter(x=>x.n).sort((a,b)=>b.n-a.n).slice(0,10);
+  const allA=provRank.flatMap(({p})=>list.map(s=>sumUnits(s.cb[p],band.units)).filter(c=>c.n>=30).map(c=>c.fee/c.n)).sort((a,b)=>a-b);
+  const qq=k=>allA[Math.min(allA.length-1,Math.floor(k*allA.length))]??0,cuts2=[qq(.2),qq(.4),qq(.6),qq(.8)],levelOf=v=>'s'+(1+cuts2.filter(c=>v>=c).length);
+  const same=`<div class="tw"><table class="heat"><thead><tr><th class="rowh">${band.label}</th>${list.map(s=>`<th><span class="dot" style="background:${colorOf(s.i)}"></span>${esc(s.name.slice(0,6))}</th>`).join('')}<th>网点</th></tr></thead><tbody>${provRank.map(({p})=>{const r=netCell(p,band.units),ra=r.n?r.fee/r.n:null;return `<tr><th class="rowh">${S.provinces[p]}</th>${list.map(s=>{const c=sumUnits(s.cb[p],band.units);if(!c.n)return '<td class="c empty">·</td>';const a=c.fee/c.n,adj=refFor(s.cb[p],NET[p],band.units),dev=c.n>=30&&adj.avg?a/adj.avg-1:null;return `<td class="c ${c.n<30?'small':levelOf(a)}" style="cursor:default" title="${c.n}票 · 均重 ${fmt(c.w/c.n,2)}kg · 网点同类件 ${fmt(adj.avg,3)}">${dev!=null&&Math.abs(dev)>=.02?`<span class="dv ${dev>0?'up':'down'}">${dev>0?'▲':'▼'}${Math.abs(dev*100).toFixed(0)}%</span>`:''}<span class="a num">${fmt(a,2)}</span><span class="m num">${c.n}票 · ${fmt(c.w/c.n,2)}kg</span></td>`}).join('')}<td class="tot num" style="text-align:center">${fmt(ra,2)}</td></tr>`}).join('')}</tbody></table></div>`;
+  const sameHead=`<div class="panel-head" style="margin-top:6px"><h2>同流向同重量段，谁贵谁便宜</h2><select id="cmpBand" class="btn" style="font-weight:500">${b05.filter(b=>list.some(s=>total(Object.fromEntries(Object.entries(s.cb).map(([p,v])=>[p,{1:sumUnits(v,b.units)}]))).n>0)).map(b=>opt(b.label,b.label===cmpBand,b.label+(unionMain.includes(b.label)?' · 主要/次要':''))).join('')}</select></div>`;
+  // flow mix
+  const topP=Object.keys(NET).map(p=>({p,n:list.reduce((s,x)=>s+total({[p]:x.cb[p]||{}}).n,0)})).sort((a,b)=>b.n-a.n).slice(0,6).map(x=>x.p);
+  const pal=['var(--f1)','var(--f2)','var(--f3)','var(--f4)','var(--f5)','var(--f6)'];
+  const mix=`<table class="list"><tbody>${list.map(s=>{const tot=s.t.n;let rem=tot;const segs=topP.map((p,k)=>{const n=total({[p]:s.cb[p]||{}}).n;rem-=n;return `<i style="width:${n/tot*100}%;background:${pal[k]}" title="${S.provinces[p]} ${pct(n/tot)}"></i>`}).join('')+`<i style="width:${rem/tot*100}%;background:var(--line)" title="其他 ${pct(rem/tot)}"></i>`;return `<tr><td style="width:120px"><span class="dot" style="background:${colorOf(s.i)}"></span>${esc(s.name.slice(0,6))}</td><td><div class="mix">${segs}</div></td></tr>`}).join('')}</tbody></table><div class="legend" style="margin-top:6px">${topP.map((p,k)=>`<span><i class="sw" style="background:${pal[k]}"></i>${S.provinces[p]}</span>`).join('')}<span><i class="sw" style="background:var(--line)"></i>其他</span></div>`;
+  return `<section class="panel"><div class="panel-head"><h2>客户对比</h2><span class="hint">${list.length} 个客户 · 同一时间范围 · 均只含正常件</span></div>${table}</section>
+  <section class="panel"><div class="panel-head"><h2>重量分布对比</h2><span class="hint">按各自票量占比比较</span><div class="legend">${list.map(s=>`<span><i class="ln" style="border-color:${colorOf(s.i)}"></i>${esc(s.name)}</span>`).join('')}</div></div>${overlayChart(list)}</section>
+  <section class="cmp-grid"><div class="panel">${decPanel}</div><div class="panel"><div class="panel-head"><h2>流向结构</h2><span class="hint">前 6 大流向占比</span></div>${mix}</div></section>
+  <section class="panel">${sameHead}${same}<p class="hint">格子颜色为单票成本区间（深 = 贵）；▲/▼ 为与网点同流向、相同 0.1kg 重量分布折算后贵 / 便宜 ≥2%；“网点”列为该段网点平均。</p></section>`}
+
+function spark(d){const tot=d.reduce((s,x)=>s+x.n,0)||1,mx=Math.max(...d.slice(1,31).map(x=>x.n/tot))||1;let g='';
+  for(let u=1;u<=30;u++){const v=d[u].n/tot,h=v/mx*34,cls=v>=.1?'main':v>=.03?'sub':'low';g+=`<rect class="b-${cls}" x="${(u-1)*10+1}" y="${36-h}" width="8" height="${Math.max(h,.5)}" rx="1"/>`}
+  for(const [s] of S.steps)if(s<=3)g+=`<line x1="${s*100}" x2="${s*100}" y1="0" y2="38" stroke="var(--warn)" stroke-dasharray="2 2"/>`;
+  return `<svg class="spark" viewBox="0 0 300 38" preserveAspectRatio="none" aria-hidden="true">${g}</svg>`}
+function flagBadges(s,ref){const b=[];if(s.gap>=.03)b.push('<span class="badge up">比网点贵</span>');if(s.gap<=-.03)b.push('<span class="badge down">比网点便宜</span>');if(s.retRate>=NET_RET_RATE*1.5)b.push('<span class="badge up">退改偏高</span>');if(s.cr.n/s.t.n>=.15)b.push('<span class="badge warn">超档件多</span>');return b.join(' ')}
+function groupPanel(){
+  const small=STATS.filter(s=>s.t.n<MIN_GROUP_N),solo=GROUPS.filter(g=>g.members.length===1),multi=GROUPS.filter(g=>g.members.length>1);
+  const card=g=>{const d=dist01(cube(new Set(g.members))),avg=g.fee/g.n,open=st.openGroup===g.key,ms=open?g.members:g.members.slice(0,5);
+    return `<div class="grp"><div class="grp-h"><b>${esc(g.wlabel)}</b><span>·</span><b>${esc(g.flabel)}</b><span class="hint">${g.members.length} 个客户 · ${int(g.n)} 票 · 占网点 ${pct(g.n/NETT.n)} · 平均 ${fmt(avg,3)} 元/票</span></div>
+      ${spark(d)}
+      <table class="list"><thead><tr><th>客户</th><th>票数</th><th>账单单票</th><th>比网点贵/便宜</th><th>刚超档</th><th>退改率</th><th></th></tr></thead><tbody>${ms.map(i=>{const s=STATS[i];return `<tr class="click" data-solo="${i}"><td>${esc(s.name)}</td><td class="num">${int(s.t.n)}</td><td class="num">${fmt(s.avg,3)}</td><td class="num ${s.gap>=.03?'worst':s.gap<=-.03?'best':''}">${(s.gap>=0?'+':'')+fmt(s.gap,3)}</td><td class="num">${pct(s.cr.n/s.t.n)}</td><td class="num">${pct(s.retRate,1)}</td><td>${flagBadges(s)}</td></tr>`}).join('')}</tbody></table>
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-cmpgroup="${esc(g.key)}">对比这一组${g.members.length>MAX_CMP?`（前 ${MAX_CMP} 个）`:''}</button>${g.members.length>5?`<button class="more" data-opengroup="${esc(g.key)}">${open?'收起':'查看全部 '+g.members.length+' 个'}</button>`:''}</div></div>`};
+  return `<section class="panel"><div class="panel-head"><h2>同类客户分群</h2><span class="hint">按主要重量 + 流向偏向自动归类（某大区占比比网点高 6 个百分点以上记为“偏该大区”）· 月票量 ≥ ${MIN_GROUP_N} 的 ${STATS.length-small.length} 个客户分为 ${multi.length} 组，另有 ${solo.length} 个结构独特；${small.length} 个小客户（合计 ${int(small.reduce((t,s)=>t+s.t.n,0))} 票）未参与</span></div>
+    <div class="groups">${multi.map(card).join('')}</div>
+    ${solo.length?`<div style="margin-top:12px"><div class="eyebrow">结构独特的客户</div><table class="list"><tbody>${solo.map(g=>{const s=STATS[g.members[0]];return `<tr class="click" data-solo="${s.i}"><td>${esc(s.name)}</td><td>${esc(g.key)}</td><td class="num">${int(s.t.n)} 票</td><td class="num">${fmt(s.avg,3)} 元</td><td>${flagBadges(s)}</td></tr>`}).join('')}</tbody></table></div>`:''}
+    <p class="hint">“比网点贵/便宜”已排除重量和流向结构差异：同组客户结构相近，单票成本差异主要看这一列和“刚超档”。</p></section>`}
+function historyPanel(){
+  if(!H)return '';
+  const ms=H.months,rows=ms.map(m=>({m,...histOf(st.sel,m)})).filter(x=>x.n),cur=rows[rows.length-1],prev=rows.length>1?rows[rows.length-2]:null;
+  if(!cur)return '';
+  const mainIdx=cur.b.indexOf(Math.max(...cur.b)),bl=k=>k===0?'≤0.5kg':k===11?'5.5kg以上':`${k*.5}–${(k+1)*.5}kg`;
+  const line=r=>`<tr><td>${+r.m.slice(5)} 月</td><td class="num">${int(r.n)}</td><td class="num">${r.days?int(r.n/r.days):'—'}</td><td class="num">${fmt(r.w/r.n,3)}</td><td class="num">${fmt(r.fee/r.n,3)}</td><td class="num">${pct(r.crit/r.n)}</td><td class="num">${pct(r.b[mainIdx]/r.n)}</td></tr>`;
+  const tiny=prev&&prev.n<MIN_PREV;
+  const delta=tiny?`<tr class="total"><td>变化</td><td colspan="6" class="hint">${+prev.m.slice(5)} 月仅 ${int(prev.n)} 票，样本太少，不做比较</td></tr>`:prev?`<tr class="total"><td>变化</td><td class="num">${chg(cur.n,prev.n)}</td><td class="num">${prev.days?chg(cur.n/cur.days,prev.n/prev.days):'—'}</td><td class="num">${chg(cur.w/cur.n,prev.w/prev.n,'abs')}</td><td class="num">${chg(cur.fee/cur.n,prev.fee/prev.n,'abs')}</td><td class="num">${chg(cur.crit/cur.n*100,prev.crit/prev.n*100,'pp')}</td><td class="num">${chg(cur.b[mainIdx]/cur.n*100,prev.b[mainIdx]/prev.n*100,'pp')}</td></tr>`:'';
+  const keys=[...Array(12).keys()].filter(k=>cur.b[k]/cur.n>=.01||(prev&&prev.b[k]/prev.n>=.01));
+  const mx=Math.max(...keys.flatMap(k=>[cur.b[k]/cur.n,prev?prev.b[k]/prev.n:0]));
+  const bars=keys.map(k=>{const a=prev?prev.b[k]/prev.n:0,b=cur.b[k]/cur.n,d=(b-a)*100;return `<div class="hbar"><span class="hl">${bl(k)}</span><div class="hb"><i class="prev" style="width:${a/mx*100}%"></i><i class="cur" style="width:${b/mx*100}%"></i></div><span class="num hv">${pct(b,1)} <small class="${Math.abs(d)<.5?'':d>0?'up':'down'}">${d>0?'+':d<0?'−':''}${Math.abs(d).toFixed(1)}</small></span></div>`}).join('');
+  const say=tiny?`${+prev.m.slice(5)} 月只有 ${int(prev.n)} 票，可能是新客户或刚开始发货。`:prev?`单票成本较 ${+prev.m.slice(5)} 月 ${cur.fee/cur.n>=prev.fee/prev.n?'上升':'下降'} ${fmt(Math.abs(cur.fee/cur.n-prev.fee/prev.n),3)} 元；均重 ${cur.w/cur.n>=prev.w/prev.n?'+':'−'}${fmt(Math.abs(cur.w/cur.n-prev.w/prev.n),3)} kg，刚超档件占比 ${cur.crit/cur.n>=prev.crit/prev.n?'+':'−'}${Math.abs((cur.crit/cur.n-prev.crit/prev.n)*100).toFixed(1)} 个百分点。`:'只有一个月的数据，导入更多月份后可对比。';
+  return `<section class="panel"><div class="panel-head"><h2>历史对比</h2><span class="hint">按寄件月份 · 只含正常件 · 单票为账单费用</span></div>
+    <div class="cmp-grid"><div><div class="tw"><table class="list fin"><thead><tr><th>月份</th><th>发件量</th><th>日均</th><th>均重 kg</th><th>账单单票 元</th><th>刚超档件</th><th>${bl(mainIdx)} 占比</th></tr></thead><tbody>${rows.map(line).join('')}${delta}</tbody></table></div><p class="hint" style="margin-top:8px">${say}</p></div>
+    <div><div class="eyebrow">重量结构变化 <span class="legend" style="display:inline-flex;margin-left:8px"><span><i class="sw" style="background:var(--c-low)"></i>${prev?+prev.m.slice(5)+' 月':''}</span><span><i class="sw" style="background:var(--c-main)"></i>${+cur.m.slice(5)} 月</span></span></div>${bars}</div></div></section>`}
+function afterSalesPanel(){
+  const t=total(cube(st.sel)),r=retOf(st.sel),net=NETRET(),me=st.sel.size===1?STATS[[...st.sel][0]]:null,g=me&&GROUPS.find(x=>x.key===me.key);
+  const gr=g?retOf(new Set(g.members)):null,per=r.total/t.n,netPer=(net.rfee+net.rbill)/NETT.n;
+  const bar=(n,lab,col)=>`<div class="row" style="padding:4px 0"><span style="width:96px">${lab}</span><div style="flex:1;height:12px;background:var(--line2);border-radius:3px;overflow:hidden"><i style="display:block;height:100%;width:${r.rn?n/r.rn*100:0}%;background:${col}"></i></div><span class="num" style="width:110px;text-align:right">${int(n)} 票 · ${pct(r.n?n/r.n:0,2)}</span></div>`;
+  const high=r.rate>net.rate*1.5;
+  return `<section class="panel"><div class="panel-head"><h2>退改附加成本（拦截 / 退件 / 退改）</h2><span class="hint">不计入正常件单票成本；可在“成本模拟”中摊入客户成本</span></div>
+    <div class="cmp-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+      <div><div class="eyebrow">退改情况</div><div class="v num" style="font-size:26px;font-weight:600" ${high?'class="up"':''}>${pct(r.rate,2)}</div>
+        <p class="hint" style="margin:2px 0 8px">网点 ${pct(net.rate,2)}${gr?` · 同组 ${pct(gr.rate,2)}`:''} · 共 ${int(r.rn)} / ${int(r.n)} 票</p>
+        ${bar(r.n1,'拦截 + 退改','var(--c-main)')}${bar(r.n2,'仅拦截','var(--c-sub)')}${bar(r.n3,'退改 / 首中心退','var(--c-low)')}</div>
+      <div><div class="eyebrow">附加成本</div><div class="kv" style="margin-top:6px"><span class="hint">项目</span><span class="hint">金额</span><span class="hint">摊到每票</span>
+        <span>退改件账单费用</span><span class="num">${fmt(r.rfee,0)}</span><span class="num">${fmt(r.rfee/t.n,3)}</span>
+        <span>退件费（单独）</span><span class="num">${fmt(r.rbill,0)}</span><span class="num">${fmt(r.rbill/t.n,3)}</span>
+        <span>客服成本 ${st.sim.service.on?`（${st.sim.service.v} 元/单）`:'<span class="hint">未开模拟</span>'}</span><span class="num">${fmt(r.service,0)}</span><span class="num">${fmt(r.service/t.n,3)}</span>
+        <span><b>合计</b></span><span class="num"><b>${fmt(r.total,0)}</b></span><span class="num"><b>${fmt(per,3)}</b></span></div>
+        <p class="hint">摊到每票 = 合计 ÷ 正常件 ${int(t.n)} 票；网点平均 ${fmt(netPer,3)}（不含客服）。</p></div>
+      <div><div class="eyebrow">谈判提示</div>${high?`<div class="ins warn" style="margin-top:6px"><b>退改率是网点的 ${fmt(r.rate/net.rate,1)} 倍</b><p>每票多出附加成本约 ${fmt(per-netPer,3)} 元。报价时可加收增值费，或约定退改上限 / 退件费由客户承担。</p></div>`
+        :`<div class="ins" style="margin-top:6px"><b>${r.rate<net.rate*.7?'退改率低于网点':'退改率接近网点'}</b><p>每票附加成本 ${fmt(per,3)} 元（网点 ${fmt(netPer,3)}）。${r.rate<net.rate*.7?'可作为优质客户条件。':'无需额外条款。'}</p></div>`}</div>
+    </div></section>`}
+function similarPanel(i){
+  const me=STATS[i],sims=similarTo(i,5),g=GROUPS.find(x=>x.key===me.key);
+  return `<section class="panel"><div class="panel-head"><h2>相似客户</h2><span class="hint">按重量分布和流向分布的重合度自动挑选 · ${esc(me.name)} 属于「${esc(me.key)}」${g?`（${g.members.length} 个客户）`:''}</span>
+    <span style="margin-left:auto;display:flex;gap:8px"><button class="btn" data-cmpsim="${i}">与前 4 个相似客户对比</button>${g&&g.members.length>1?`<button class="btn" data-cmpgroup="${esc(g.key)}">对比整组</button>`:''}</span></div>
+    <div class="tw"><table class="list"><thead><tr><th>客户</th><th>相似度</th><th>分群</th><th>主要流向</th><th>票数</th><th>账单单票</th><th>比网点贵/便宜</th><th>刚超档</th></tr></thead><tbody>
+    <tr><td><b>${esc(me.name)}（当前）</b></td><td class="num">—</td><td>${esc(me.key)}</td><td>${me.topProv.map(p=>short(S.provinces[p])).join('、')}</td><td class="num">${int(me.t.n)}</td><td class="num">${fmt(me.avg,3)}</td><td class="num">${(me.gap>=0?'+':'')+fmt(me.gap,3)}</td><td class="num">${pct(me.cr.n/me.t.n)}</td></tr>
+    ${sims.map(({s,sim})=>`<tr class="click" data-solo="${s.i}"><td>${esc(s.name)}</td><td class="num">${pct(sim,0)}</td><td>${esc(s.key)}</td><td>${s.topProv.map(p=>short(S.provinces[p])).join('、')}</td><td class="num">${int(s.t.n)}</td><td class="num ${s.avg>me.avg?'':'best'}">${fmt(s.avg,3)}</td><td class="num">${(s.gap>=0?'+':'')+fmt(s.gap,3)}</td><td class="num">${pct(s.cr.n/s.t.n)}</td></tr>`).join('')}
+    </tbody></table></div></section>`}
+function rankingTable(){
+  const all=STATS.slice().sort((a,b)=>b.t.n-a.t.n),rows=st.rankAll?all:all.slice(0,30);
+  return `<section class="panel"><div class="panel-head"><h2>客户排行</h2><span class="hint">点一行进入该客户</span></div><div class="tw"><table class="list"><thead><tr><th>客户</th><th>分群</th><th>票数</th><th>日均</th><th>占网点</th><th>均重 kg</th><th>主要重量</th><th>账单单票</th>${st.cmpPeriod?`<th>发件量较${+st.cmpPeriod.slice(5)}月</th><th>单票较${+st.cmpPeriod.slice(5)}月</th>`:''}<th>比网点贵/便宜</th><th>刚超档</th><th>退改率</th><th>附加成本/票</th></tr></thead><tbody>${rows.map(s=>`<tr class="click" data-solo="${s.i}"><td>${esc(s.name)}</td><td>${s.t.n>=MIN_GROUP_N?esc(s.key):'<span class="hint">小客户</span>'}</td><td class="num">${int(s.t.n)}</td><td class="num">${int(s.t.n/activeDays(new Set([s.i])))}</td><td class="num">${pct(s.t.n/NETT.n)}</td><td class="num">${fmt(s.avgW,2)}</td><td>${s.main}</td><td class="num">${fmt(s.avg,3)}</td>${st.cmpPeriod?(()=>{const a=histOf(new Set([s.i]),st.cmpPeriod),b=histOf(new Set([s.i]),CUR);return a.n<MIN_PREV?`<td class="num"><span class="hint">${a.n?'上期仅 '+int(a.n)+' 票':'新客户'}</span></td><td class="num">—</td>`:`<td class="num">${chg(b.n,a.n)}</td><td class="num">${chg(b.fee/b.n,a.fee/a.n,'abs')}</td>`})():''}<td class="num ${s.gap>0.01?'worst':s.gap<-0.01?'best':''}">${(s.gap>=0?'+':'')+fmt(s.gap,3)}</td><td class="num">${pct(s.cr.n/s.t.n)}</td><td class="num ${s.retRate>=NET_RET_RATE*1.5?'worst':''}">${pct(s.retRate,2)}</td><td class="num">${fmt(s.retCost,3)}</td></tr>`).join('')}</tbody></table></div><button class="more" id="rankMore">${st.rankAll?'只看前 30 个':'展开全部 '+all.length+' 个客户'}</button></section>`}
+
+/* ---------- drawer (cell detail) ---------- */
+function openDrawer(rowKey,j){
+  const cb=cube(st.sel),d=dist01(cb),bands=st.level==='province'?smartBands(d,st.expand):smartBands(d,false),b=bands[j],cc=cityCube(st.sel);
+  let c,r,name,cities='';
+  if(st.level==='province'){c=sumUnits(cb[rowKey],b.units);r=refFor(cb[rowKey],NET[rowKey],b.units);name=S.provinces[rowKey];
+    const list=Object.keys(cc).filter(k=>S.cities[k].startsWith(S.provinces[rowKey]+'/')).map(k=>({k,s:sumUnits(cc[k],b.units),rr:refFor(cc[k],CITYNET[k],b.units)})).filter(x=>x.s.n).sort((a,b)=>b.s.n-a.s.n).slice(0,8);
+    cities=`<div><div class="eyebrow">城市明细</div><div class="kv"><span class="hint">城市</span><span class="hint">票数</span><span class="hint">单票 / 网点</span>${list.map(x=>`<span>${S.cities[x.k].split('/')[1]}</span><span class="num">${int(x.s.n)}</span><span class="num">${fmt(x.s.fee/x.s.n,2)} / ${fmt(x.rr.avg,2)}</span>`).join('')}</div></div>`}
+  else{c=sumUnits(cc[rowKey],b.units);r=refFor(cc[rowKey],CITYNET[rowKey],b.units);name=S.cities[rowKey].replace('/',' · ')}
+  const a=c.fee/c.n,ra=r.avg;
+  const K=simConst(),cp=st.level==='province'?cb[rowKey]:cc[rowKey];
+  const simRows=SIM_META.filter(([k])=>st.sim[k].on&&k!=='service'&&k!=='addon').map(([k,label])=>[label,simAdj(cp,b.units,K,[k])/c.n]).filter(x=>Math.abs(x[1])>1e-9);
+  const ret=retOf(st.sel),addonPer=st.sim.addon.on?ret.total/total(cube(st.sel)).n:0;if(addonPer)simRows.push(['退改附加成本',addonPer]);
+  const simTot=simRows.reduce((t,x)=>t+x[1],0);
+  const comp=st.level==='province'&&c.n?[['派费',c.disp/c.n,r.disp,'var(--c-main)'],['中转费',c.tran/c.n,r.tran,'var(--c-sub)'],['面单加价',c.mf/c.n,r.mf,'var(--c-low)']]:null;
+  $('#drawer').hidden=false;
+  $('#drawer').innerHTML=`<aside class="drawer" role="dialog" aria-label="格子明细"><button class="xbtn" id="xbtn" aria-label="关闭">×</button>
+    <div><div class="eyebrow">${esc(selName().slice(0,30))}</div><h3>${name} · ${b.label}</h3></div>
+    <div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div class="kpi"><span class="k">票数</span><span class="v num" style="font-size:20px">${int(c.n)}</span><span class="s">均重 ${c.w?fmt(c.w/c.n,2)+' kg':'—'}</span></div><div class="kpi"><span class="k">单票成本</span><span class="v num" style="font-size:20px">${fmt(a,3)}</span></div><div class="kpi"><span class="k">网点同类件</span><span class="v num" style="font-size:20px">${fmt(ra,3)}</span><span class="s ${ra&&a>ra?'up':'down'}">${ra?(a>=ra?'+':'')+pct(a/ra-1):''}</span></div></div>
+    ${comp?`<div><div class="eyebrow">成本构成（元/票）</div><div class="stack" style="margin:6px 0">${comp.map(([k,v,,col])=>`<i style="width:${v/a*100}%;background:${col}" title="${k} ${fmt(v,3)}"></i>`).join('')}</div><div class="kv"><span class="hint">项目</span><span class="hint">本格</span><span class="hint">网点</span>${comp.map(([k,v,n,col])=>`<span><i class="sw" style="background:${col}"></i>${k}</span><span class="num">${fmt(v,3)}</span><span class="num">${fmt(n,3)}</span>`).join('')}${simRows.map(([k,v])=>`<span>模拟：${k}</span><span class="num">${v>=0?'+':'−'}${fmt(Math.abs(v),3)}</span><span class="num hint">—</span>`).join('')}${simRows.length?`<span><b>实际合计</b></span><span class="num"><b>${fmt(a+simTot,3)}</b></span><span class="num hint">—</span>`:''}</div>${simRows.length?'<p class="hint">模拟项来自“成本模拟”开关；网点列为账单费用。</p>':''}</div>`:''}
+    ${cities}
+    <p class="hint">“网点同类件”= 网点同流向、按本格相同的 0.1kg 重量分布折算的单票成本，排除了格子内轻重差异。</p>
+    <div class="hint">正式版：此处还可查看运单列表与原始记录，并可一键“按此范围报价”。</div></aside>`;
+  $('#xbtn').onclick=()=>{$('#drawer').hidden=true};$('#xbtn').focus()}
+/* ---------- 成本模拟面板 ---------- */
+function simPanel(){
+  const cb=cube(st.sel),t=total(cb),K=simConst(),ret=retOf(st.sel),sm=st.sim;
+  const num=(k,f,step,w=72)=>`<input class="num" type="number" step="${step}" min="0" data-simv="${k}.${f}" value="${sm[k][f]}" style="width:${w}px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;background:var(--panel)">`;
+  const dailyAvg=NETT.n/NDAYS,tier=TIERS.find(([a,b])=>dailyAvg>a*1e4&&(b==null||dailyAvg<=b*1e4))||TIERS[0],tierVal=+((1-tier[2])*1.45).toFixed(3);
+  const params={subsidy:`${num('subsidy','v',.01)} 元/票`,operation:`${num('operation','v',.01)} 元/票`,management:`${num('management','v',.01)} 元/票`,
+    puhui:`${num('puhui','v',.001)} 元/票 <button class="more" data-simtier="${tierVal}" style="padding:0 0 0 6px">按日均 ${int(dailyAvg)} 票套用 ${tier[0]}–${tier[1]??'∞'} 万档（${tierVal}）</button>`,
+    w115:`${num('w115','v',.01)} 元/票`,w13:`基数 ${num('w13','base',1000,96)} 票 × ${num('w13','v',.01)} 元`,tongpiao:`${num('tongpiao','v',.01)} 元/票`,
+    heavy:`基数 ${num('heavy','base',100,90)} kg · 罚 ${num('heavy','rate',.1,56)} 元/kg · 奖励 ${num('heavy','share',.05,56)} × 中转费单价<br><span class="hint">本期 3kg 以上结算重量 ${int(K.w3)} kg → ${K.heavyAmt<0?'罚 '+int(-K.heavyAmt):'奖 '+int(K.heavyAmt)} 元</span>`,
+    idle:`指标 ${num('idle','target',10000,110)} 票 · 每差 1 票 ${num('idle','v',.1,56)} 元<br><span class="hint">本期正常件 ${int(NETT.n)} 票</span>`,
+    custom:`${num('custom','v',.01)} 元/票（减）`,service:`${num('service','v',.1)} 元/单（本期 ${int(ret.rn)} 单退改）`,addon:`本客户 ${fmt(ret.total,0)} 元 ÷ ${int(t.n)} 票 = ${fmt(ret.total/t.n,3)} 元/票`};
+  const effect=k=>{if(k==='service')return ret.service;if(k==='addon')return sm.addon.on?ret.total:0;return simAdjCube(cb,K,k==='subsidy'?['subsidy']:[k])+(k==='subsidy'?0:0)};
+  const rows=SIM_META.map(([k,label,desc])=>{const on=sm[k].on,e=on?effect(k):0;
+    return `<div class="sim-row ${on?'on':''}"><button class="switch" role="switch" aria-checked="${on}" data-simk="${k}" aria-label="${label}"></button>
+      <div class="sim-body"><b>${label}</b> <span class="hint">${desc}</span><div class="sim-params">${params[k]}</div></div>
+      <div class="sim-eff num">${on?`${e>=0?'+':'−'}${fmt(Math.abs(e)/t.n,3)}<small>元/票</small><br><span class="hint">${e>=0?'+':'−'}${int(Math.abs(e))} 元</span>`:'<span class="hint">未开启</span>'}</div></div>`}).join('');
+  const tot=simAdjCube(cb,K)+(sm.addon.on?ret.total:0);
+  return `<aside class="drawer sim" role="dialog" aria-label="成本模拟"><button class="xbtn" data-sim="close" aria-label="关闭">×</button>
+    <div><div class="eyebrow">${esc(selName().slice(0,30))} · ${int(t.n)} 票</div><h3>成本模拟</h3><p class="hint" style="margin:4px 0 0">打开开关即时重算成本分析和报价。比价指标（比网点贵/便宜、▲▼）不受影响。</p></div>
+    <div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))"><div class="kpi"><span class="k">账单单票</span><span class="v num" style="font-size:20px">${fmt(t.fee/t.n,3)}</span></div>
+      <div class="kpi"><span class="k">模拟调整</span><span class="v num" style="font-size:20px">${tot>=0?'+':'−'}${fmt(Math.abs(tot)/t.n,3)}</span><span class="s">${simCount()} 项开启</span></div>
+      <div class="kpi"><span class="k">模拟后单票</span><span class="v num" style="font-size:20px">${fmt((t.fee+tot)/t.n,3)}</span></div></div>
+    <div class="sim-list">${rows}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-sim="reset">全部关闭</button><button class="btn primary" data-sim="save">保存为默认</button></div></aside>`}
+/* ---------- quote page ---------- */
+function quotePage(){
+  const q=st.q,basisSel=q.basis==='network'?new Set(S.customers.map((_,i)=>i)):st.sel;
+  const cb=cube(basisSel),d=dist01(cb),sub=q.sub==='一客一价'?0.2:0,K=simConst(),ret=retOf(st.sel),addonPer=q.addon?ret.total/total(cube(st.sel)).n:0;
+  // Quotes must price every weight, so columns are a complete grid; concentration still comes from this customer's mix.
+  const tot=d.reduce((s,x)=>s+x.n,0)||1,grid=[[0,.5],[.5,1],[1,1.5],[1.5,2],[2,3],[3,5],[5,99]];
+  const bands=grid.map(([lo,hi])=>{const units=[];for(let u=Math.round(lo*10)+1;u<=Math.min(60,Math.round(hi*10));u++)units.push(u);const n=units.reduce((s,u)=>s+d[u].n,0),share=n/tot;
+    return {lo,hi,units,n,share,cls:share>=.4?'main':share>=.1?'sub':'low',label:hi>=99?`${lo}kg以上`:lo===0?`≤${hi}kg`:`${lo}–${hi}kg`}});
+  const provs=Object.keys(NET).map(p=>({p,n:total({[p]:cb[p]||{}}).n,nn:total({[p]:NET[p]}).n})).sort((a,b)=>b.n-a.n||b.nn-a.nn);
+  let rev=0,cost=0,nq=0,loss=0,edited=0;
+  const rows=provs.map(({p})=>{const cells=bands.map((b,j)=>{const c=sumUnits(cb[p],b.units),r=netCell(p,b.units);const key=p+'|'+j;
+      let base,src;const all=Object.keys(NET).reduce((a,pp)=>{const x=netCell(pp,b.units);a.n+=x.n;a.fee+=x.fee;return a},{n:0,fee:0});
+      if(c.n>=30){base=c.fee/c.n;src='own'}else if(r.n>=30){base=r.fee/r.n;src='ref'}else if(all.n>=30){base=all.fee/all.n;src='all'}else return {src:'none',key};
+      base+=(src==='own'?simAdj(cb[p],b.units,K)/c.n:src==='ref'?simAdj(NET[p],b.units,K)/r.n:0)+addonPer-sub;const sug=Math.round((q.mode==='percent'?base*(1+q.value/100):base+ +q.value)*10)/10;const price=q.over[key]??sug;
+      if(c.n){rev+=price*c.n;cost+=base*c.n;nq+=c.n}if(price<base)loss++;if(q.over[key]!=null)edited++;
+      return {src,key,base,sug,price,n:c.n,edited:q.over[key]!=null,loss:price<base}});return {p,cells}});
+  const td=x=>{if(x.src==='none')return '<td class="none">—</td>';return `<td class="${x.src!=='own'?'ref':''} ${x.edited?'edited':''} ${x.loss?'loss':''}"><input class="num" data-q="${x.key}" value="${x.price.toFixed(1)}" inputmode="decimal" aria-label="报价"><small class="num">成本 ${fmt(x.base,2)} · ${x.src==='ref'?'<span class="tag">参考网点</span>':x.src==='all'?'<span class="tag">参考全网</span>':x.n+'票'}</small></td>`};
+  const custOpts=S.customers.map((c,i)=>`<option value="${esc(c)}" ${q.target===c?'selected':''}>${esc(c)}</option>`).join('');
+  return `<section class="panel"><div class="qbar">
+     <div class="field"><label for="qTarget">报价客户</label><input id="qTarget" type="text" list="custList" value="${esc(q.target||selName().split('、')[0])}" placeholder="选择或输入新客户"><datalist id="custList">${custOpts}</datalist></div>
+     <div class="field"><label for="qBasis">成本依据</label><select id="qBasis"><option value="sel" ${q.basis==='sel'?'selected':''}>当前选择：${esc(selName().slice(0,16))}</option><option value="network" ${q.basis==='network'?'selected':''}>网点整体</option></select></div>
+     <div class="field"><span class="lab">退改附加成本</span><label class="check" style="font-size:13px"><input type="checkbox" id="qAddon" ${q.addon?'checked':''}> 附加本客户 +${fmt(retOf(st.sel).total/total(cube(st.sel)).n,3)}/票</label></div>
+     <div class="field"><label for="qSub">客户补贴</label><select id="qSub"><option value="" ${!q.sub?'selected':''}>无补贴</option><option ${q.sub==='一客一价'?'selected':''}>一客一价（每票 0.2 元）</option></select></div>
+     <div class="field"><span class="lab">加价方式</span><div class="seg"><button data-mode="percent" aria-pressed="${q.mode==='percent'}">成本 + %</button><button data-mode="fixed" aria-pressed="${q.mode==='fixed'}">每票 + 元</button></div></div>
+     <div class="field"><label for="qVal">${q.mode==='percent'?'加价 %':'加价 元/票'}</label><input id="qVal" type="number" step="${q.mode==='percent'?1:.05}" min="0" value="${q.value}"></div>
+     <div style="margin-left:auto;display:flex;gap:8px"><button class="btn" id="qReset" ${edited?'':'disabled'}>恢复建议价</button><button class="btn" id="qSave">保存报价</button><button class="btn primary" id="qExport">导出 Excel</button></div>
+   </div></section>
+   <section class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+     <div class="kpi"><span class="k">按样本结构估算收入</span><span class="v num">${int(rev)}</span><span class="s">${int(nq)} 票 × 对应报价</span></div>
+     <div class="kpi"><span class="k">估算毛利</span><span class="v num">${int(rev-cost)}</span><span class="s">毛利率 ${pct(rev?(rev-cost)/rev:0)}</span></div>
+     <div class="kpi"><span class="k">人工改价</span><span class="v num">${edited}</span><span class="s">黄框为已改</span></div>
+     <div class="kpi ${loss?'alert':''}"><span class="k">低于成本</span><span class="v num">${loss}</span><span class="s">红框格子需要确认</span></div></section>
+   <section class="panel"><div class="panel-head"><h2>报价表 · ${esc(q.target||selName().split('、')[0])}</h2><span class="hint">元/票，保留 1 位小数 · 报价覆盖全部重量，深色标签为该客户主要重量 · 斜纹格样本不足 30 票：先按网点同流向同重量段成本，再不足按全网同重量段成本</span></div>
+   <div class="tw"><table class="quote"><thead><tr><th style="text-align:left">流向</th>${bands.map(b=>`<th><span class="num">${b.label}</span><br><span class="cls ${b.cls}">${pct(b.share,0)}</span></th>`).join('')}</tr></thead><tbody>${rows.slice(0,st.showAllQ?99:14).map(r=>`<tr><th style="text-align:left">${S.provinces[r.p]}</th>${r.cells.map(td).join('')}</tr>`).join('')}</tbody></table></div>
+   <button class="more" id="moreQ">${st.showAllQ?'只看前 14 个流向':'展开全部 '+rows.length+' 个流向'}</button>
+   <p class="hint">导出给客户的 Excel 只有流向、重量段和报价，不含成本、毛利和其他客户信息。</p></section>
+   <section class="panel"><div class="panel-head"><h2>已保存的报价</h2></div><p class="hint">还没有保存过报价。保存后在这里按客户查看、再次导出。</p></section>`}
+
+/* ---------- data & settings ---------- */
+function dataPage(){
+  const kinds={invalid:'没有金额 / 缺目的地',noweight:'全程无重',self:'自发自签',return:'退件 / 拦截 / 退改'};
+  const kc={};for(const r of S.K)kc[r[1]]=(kc[r[1]]||0)+r[2];
+  const sw=(id,label,n)=>`<div class="row"><span>${label}<br><span class="hint">${int(n||0)} 票</span></span><button class="switch" role="switch" data-sw="${id}" aria-checked="${st.switches[id]}" aria-label="${label}"></button></div>`;
+
+  const about=`<section class="panel"><div class="panel-head"><h2>关于</h2><span class="hint">出港成本分析 · 开源项目</span></div><div class="about"><div><span class="hint">当前版本</span><b>v3.2.0</b></div><div><span class="hint">发布日期</span><b>2026-10-13</b></div><div><span class="hint">数据版本</span><b>7</b></div><div><span class="hint">库内记录</span><b>${int(S.rows)}</b></div><div><span class="hint">历史版本</span><b style="font-size:13px">v3.1.0 成本模拟 · v3.0.0 简化版</b></div></div></section>`;
+  return `<section class="set-grid">
+   <div class="panel"><div class="panel-head"><h2>导入账单</h2></div>
+     <div class="drop"><b>把出港账单 Excel 拖到这里</b><br>可一次放多个文件：单个客户、几个客户或整个网点都可以；同一运单不会重复计算</div>
+     <div style="margin-top:14px" class="row"><span><b>${esc(S.file)}</b><br><span class="hint">寄件 ${S.dates[0]} 至 ${S.dates[1]}</span></span><span class="num" style="text-align:right">${int(S.rows)} 行<br><button class="more" style="padding:0">撤销这次导入</button></span></div>
+     <div class="row"><span>包含 ${NC} 个客户</span><span class="hint">${STATS.slice(0,6).map(x=>esc(x.name)).join('、')} 等</span></div>
+     <p class="hint">同一运单再次导入时以最新导入的账单为准；如需逐条核对，可在“冲突记录”里处理。</p></div>
+   <div class="panel"><div class="panel-head"><h2>重量段</h2></div>
+     <div class="row"><span>基础区间宽度</span><div class="seg"><button aria-pressed="false">0.25kg</button><button aria-pressed="true">0.5kg</button><button aria-pressed="false">1kg</button></div></div>
+     <div class="row"><span>主要重量 / 次要段门槛</span><span class="num">≥40% / ≥10%</span></div>
+     <div class="row"><span>两端合并门槛</span><span class="num">占比 &lt; 2% 的段并入“以下 / 以上”</span></div>
+     <div class="row"><span>计费档位（从账单自动识别，可修改）</span><span>${S.steps.map(([s,j])=>`<span class="stepchip num">${s}kg <span class="hint">+${j.toFixed(2)}元</span></span>`).join('')}</span></div>
+   </div>
+   <div class="panel"><div class="panel-head"><h2>不计入客户成本的件</h2><span class="hint">本次导入中的票数</span></div>
+     ${sw('no_fee','没有金额 / 缺目的地',kc.invalid)}${sw('no_weight','全程无重（按默认重计费）',kc.noweight)}${sw('self_sign','自发自签',kc.self)}${sw('return','退件 / 拦截 / 退改（增值费用）',kc.return)}</div>
+   <div class="panel"><div class="panel-head"><h2>成本模拟默认值</h2><span class="hint">在成本分析页“成本模拟”中调整并保存</span></div>
+     ${SIM_META.map(([k,label])=>`<div class="row"><span>${label}</span><span class="num ${st.sim[k].on?'':'hint'}">${st.sim[k].on?'开启':'关闭'}${st.sim[k].v!=null?' · '+st.sim[k].v:''}</span></div>`).join('')}</div>
+  </section>${about}`}
+
+/* ---------- render & events ---------- */
+function render(){
+  document.querySelectorAll('.tabs button').forEach(b=>b.setAttribute('aria-selected',b.dataset.page===st.page));
+  $('#topMeta').innerHTML=`数据：寄件 ${S.dates[0]} – ${S.dates[1]} · ${int(NETT.n)} 票正常件<span class="preview-tag">界面预览</span>`;
+  $('#app').innerHTML=st.page==='analysis'?analysisPage():st.page==='quote'?quotePage():dataPage();
+  if(st.simOpen&&st.page==='analysis'){$('#drawer').hidden=false;$('#drawer').innerHTML=simPanel()}else if(st.simOpen===false&&$('#drawer').querySelector('.sim'))$('#drawer').hidden=true;
+}
+function toast(msg){const t=document.createElement('div');t.className='toast';t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),2400)}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button,td.c,tr.click,[data-pick]');if(!t)return;
+  if(t.matches('.tabs button')){st.page=t.dataset.page;$('#drawer').hidden=true;render();return}
+  if(t.dataset.cust==='all'){st.sel=isAll()?new Set([DEFAULT]):new Set(S.customers.map((_,i)=>i));st.expand=false;render();return}
+  if(t.dataset.level){st.level=t.dataset.level;st.showAll=false;render();return}
+  if(t.dataset.remove!=null){st.sel.delete(+t.dataset.remove);render();return}
+  if(t.dataset.cmpgroup){const g=GROUPS.find(x=>x.key===t.dataset.cmpgroup);st.sel=new Set(g.members.slice(0,MAX_CMP));st.cmpA=null;render();window.scrollTo({top:0});return}
+  if(t.dataset.cmpsim){const i=+t.dataset.cmpsim;st.sel=new Set([i,...similarTo(i,4).map(x=>x.s.i)]);st.cmpA=i;render();window.scrollTo({top:0});return}
+  if(t.dataset.opengroup){st.openGroup=st.openGroup===t.dataset.opengroup?null:t.dataset.opengroup;render();return}
+  if(t.id==='rankMore'){st.rankAll=!st.rankAll;render();return}
+  if(t.dataset.sim){const a=t.dataset.sim;if(a==='open')st.simOpen=true;else if(a==='close')st.simOpen=false;else if(a==='reset')st.sim=SIM_DEF();else if(a==='save')toast('正式版：保存为默认（写入设置）');render();return}
+  if(t.dataset.simk){st.sim[t.dataset.simk].on=!st.sim[t.dataset.simk].on;render();return}
+  if(t.dataset.simtier){st.sim.puhui.v=+t.dataset.simtier;render();return}
+  if(t.dataset.csub){st.cellSub=t.dataset.csub;render();return}
+  if(t.dataset.cmpp!=null){st.cmpPeriod=t.dataset.cmpp||null;render();return}
+  if(t.dataset.pick!=null){pickCustomer(+t.dataset.pick);return}
+  if(t.dataset.unit){st.unit=t.dataset.unit;render();return}
+  if(t.dataset.color){st.colorMode=t.dataset.color;render();return}
+  if(t.id==='expandBtn'){st.expand=!st.expand;render();return}
+  if(t.id==='moreBtn'){st.showAll=!st.showAll;render();return}
+  if(t.id==='moreQ'){st.showAllQ=!st.showAllQ;render();return}
+  if(t.matches('tr.click')){st.sel=new Set([+t.dataset.solo]);render();window.scrollTo({top:0});return}
+  if(t.matches('td.c')&&t.dataset.row!=null){openDrawer(t.dataset.row,+t.dataset.band);return}
+  if(t.dataset.mode){st.q.mode=t.dataset.mode;st.q.value=t.dataset.mode==='percent'?20:0.3;st.q.over={};render();return}
+  if(t.id==='qReset'){st.q.over={};render();return}
+  if(t.id==='qExport'){toast('正式版：导出客户报价 Excel（不含成本）');return}
+  if(t.id==='qSave'){toast('正式版：保存到“已保存的报价”');return}
+  if(t.dataset.sw){st.switches[t.dataset.sw]=!st.switches[t.dataset.sw];t.setAttribute('aria-checked',st.switches[t.dataset.sw]);return}
+});
+document.addEventListener('change',e=>{const t=e.target;
+  if(t.dataset.simv){const [k,f]=t.dataset.simv.split('.');const v=parseFloat(t.value);if(isFinite(v)&&v>=0){st.sim[k][f]=v;render()}return}
+  if(t.id==='cmpA'){st.cmpA=+t.value;render()}else if(t.id==='cmpB'){st.base=t.value;render()}else if(t.id==='cmpBand'){st.cmpBand=t.value;render()}
+  else if(t.id==='qAddon'){st.q.addon=t.checked;st.q.over={};render()}
+  else if(t.id==='qBasis'){st.q.basis=t.value;st.q.over={};render()}else if(t.id==='qSub'){st.q.sub=t.value.startsWith('一客一价')?'一客一价':'';render()}
+  else if(t.id==='qVal'){st.q.value=Math.max(0,+t.value||0);render()}else if(t.id==='qTarget'){st.q.target=t.value.trim();render()}
+  else if(t.dataset.q){const v=parseFloat(t.value);if(isFinite(v)&&v>=0)st.q.over[t.dataset.q]=Math.round(v*10)/10;else delete st.q.over[t.dataset.q];render()}});
+function pickCustomer(i){if(isAll())st.sel=new Set([i]);else if(!st.sel.has(i)){if(st.sel.size>=MAX_CMP){toast(`最多同时对比 ${MAX_CMP} 个客户`);return}st.sel.add(i)}st.expand=false;render();setTimeout(()=>$('#custSearch')?.focus(),0)}
+let comboIdx=0;
+function comboRender(q){const box=$('#custList'),inp=$('#custSearch');if(!box)return;q=q.trim();
+  const all=STATS.filter(s=>!st.sel.has(s.i)||isAll()).filter(s=>!q||s.name.includes(q)).sort((a,b)=>b.t.n-a.t.n),list=all.slice(0,12);comboIdx=Math.min(comboIdx,Math.max(0,list.length-1));
+  const hl=n=>q?esc(n).replace(esc(q),`<mark>${esc(q)}</mark>`):esc(n);
+  box.innerHTML=list.length?list.map((s,k)=>`<div class="opt ${k===comboIdx?'active':''}" role="option" aria-selected="${k===comboIdx}" data-pick="${s.i}"><span class="nm">${hl(s.name)}</span><span class="meta num">${int(s.t.n)} 票</span><span class="tag">${s.t.n>=MIN_GROUP_N?esc(s.wlabel):'小客户'}</span></div>`).join('')+(all.length>12?`<div class="more-hint">还有 ${all.length-12} 个，继续输入缩小范围</div>`:''):'<div class="more-hint">没有匹配的客户</div>';
+  box.hidden=false;inp.setAttribute('aria-expanded','true')}
+document.addEventListener('input',e=>{if(e.target.id==='custSearch'){comboIdx=0;comboRender(e.target.value)}});
+document.addEventListener('focusin',e=>{if(e.target.id==='custSearch')comboRender(e.target.value)});
+document.addEventListener('focusout',e=>{if(e.target.id==='custSearch')setTimeout(()=>{const b=$('#custList');if(b&&!b.contains(document.activeElement)){b.hidden=true;e.target.setAttribute('aria-expanded','false')}},150)});
+document.addEventListener('mousedown',e=>{const o=e.target.closest('[data-pick]');if(o){e.preventDefault();pickCustomer(+o.dataset.pick)}});
+document.addEventListener('keydown',e=>{if(e.target.id==='custSearch'){const opts=[...document.querySelectorAll('#custList .opt')];
+    if(e.key==='ArrowDown'){comboIdx=Math.min(comboIdx+1,opts.length-1);comboRender(e.target.value);e.preventDefault()}
+    else if(e.key==='ArrowUp'){comboIdx=Math.max(comboIdx-1,0);comboRender(e.target.value);e.preventDefault()}
+    else if(e.key==='Enter'&&opts[comboIdx]){pickCustomer(+opts[comboIdx].dataset.pick);e.preventDefault()}
+    else if(e.key==='Escape'){$('#custList').hidden=true}return}
+  if(e.key==='Escape')$('#drawer').hidden=true});
+render();
+</script>
+</body>
+</html>
