@@ -110,12 +110,119 @@ class SyncTests(unittest.TestCase):
     def file(self,rows,headers=H,name='raw.xlsx'):
         path=self.root/name;path.write_bytes(workbook(headers,rows));return path
     def test_error_image_never_reaches_import(self):
-        from unittest.mock import Mock
+        from unittest.mock import Mock, call
         f=self.root/'error.xlsx';f.write_bytes(b'\xff\xd8\xfffake-error-image')
-        cost=Mock();record={}
-        with self.assertRaises(sync.UncertainExport):
-            sync.process_day(self.day,record,lambda r:None,Mock(),cost,'g',self.root/'raw',('test-task',str(f)))
+        cost=Mock();cost.upload.return_value='test-job';record={};zto=Mock();zto.call.side_effect=sync.UncertainExport('timeout');sleep=Mock()
+        with self.assertRaisesRegex(sync.UncertainExport,'结果未确认.*taskId=test-task'):
+            sync.process_day(self.day,record,lambda r:None,zto,cost,'g',self.root/'raw',('test-task',str(f)),self.root,sleep)
         cost.upload.assert_not_called();self.assertTrue(f.exists());self.assertEqual(record['taskId'],'test-task')
+        self.assertEqual(record['downloadState'],'exhausted');self.assertEqual(record['downloadAttempts'],5)
+        self.assertEqual(sleep.call_args_list,[call(60)]*5)
+        self.assertEqual(zto.call.call_args_list,[call('/api/workflows/outbound-bill-export/fetch-download-link',{'taskId':'test-task'})]*5)
+        record['status']='uncertain'
+        with self.assertRaises(sync.UncertainExport):
+            sync.process_day(self.day,record,lambda r:None,zto,cost,'g',self.root/'raw',download_root=self.root,sleep=sleep)
+        self.assertEqual(zto.call.call_count,5)  # 自动再运行不能重新创建任务或重置五次预算。
+        f.write_bytes(workbook(H,[row('test-1',2,hand='2026-10-15 12:00:00')]))
+        zto.call.side_effect=None;zto.call.return_value={'data':{'billCount':1,'totalFee':2}}
+        cost.call.return_value={'state':'done','stats':{'new':1,'duplicate':0}}
+        sync.process_day(self.day,record,lambda r:None,zto,cost,'g',self.root/'raw',('test-task',str(f)),self.root,sleep)
+        self.assertEqual(record['status'],'done');self.assertNotIn('downloadAttempts',record)
+
+    def test_same_task_bad_bad_good_download_then_import(self):
+        import io
+        from unittest.mock import Mock, patch, call
+        f=self.root/'error.xlsx';f.write_bytes(b'original-error-image')
+        valid=workbook(H,[row('test-1',2,hand='2026-10-15 12:00:00')])
+        zto=Mock();saved=[];links=[]
+        def api(path,body,timeout=60):
+            if 'one-click-download' in path:return {'data':{'results':{'createJob':{'taskId':'test-task','filePath':str(f)}}}}
+            if 'fetch-download-link' in path:
+                self.assertEqual(body,{'taskId':'test-task'});links.append(len(links)+1)
+                return {'data':{'results':{'fetchLinkApi':f'https://file-storage.gw.zt-express.com/download?signature=secret{len(links)}'}}}
+            return {'data':{'billCount':1,'totalFee':2}}
+        zto.call.side_effect=api;cost=Mock();cost.upload.return_value='test-job';cost.call.return_value={'state':'done','stats':{'new':1,'duplicate':0}}
+        opener=Mock();opener.open.side_effect=[io.BytesIO(b'jpeg'),io.BytesIO(b'PK broken zip'),io.BytesIO(valid)];sleep=Mock()
+        with patch.object(sync.urllib.request,'build_opener',return_value=opener):
+            record=sync.process_day(self.day,{},lambda r:saved.append(dict(r)),zto,cost,'g',self.root/'raw',download_root=self.root,sleep=sleep)
+        self.assertEqual(record['status'],'done');self.assertEqual(record['downloadAttempts'],3)
+        self.assertEqual(record['downloadState'],'recovered');self.assertEqual(sleep.call_args_list,[call(60)]*3)
+        self.assertEqual(sum('one-click-download' in c.args[0] for c in zto.call.call_args_list),1)
+        self.assertEqual(links,[1,2,3]);self.assertEqual(cost.upload.call_count,1)
+        self.assertEqual(Path(record['file']).read_bytes(),valid);self.assertFalse(f.exists())
+        self.assertFalse(list(self.root.glob('*.partial')));self.assertNotIn('signature',json.dumps(saved))
+        for c in opener.open.call_args_list:self.assertEqual(c.args[0].headers,{})
+
+    def test_fifth_download_allowed_and_first_valid_file_needs_no_refresh(self):
+        from unittest.mock import Mock,patch,call
+        source=self.root/'raw.xlsx';source.write_bytes(b'bad');record={};sleep=Mock()
+        with patch.object(sync,'download_task_file',side_effect=[sync.SyncError('bad')]*4+[None]) as download:
+            self.assertEqual(sync.recover_download(Mock(),'test-task',source,record,lambda r:None,self.root,sleep),source.resolve())
+        self.assertEqual(download.call_count,5);self.assertEqual(sleep.call_args_list,[call(60)]*5)
+        self.assertEqual(record['downloadState'],'recovered')
+        source.write_bytes(workbook(H,[row('test-1',2,hand='2026-10-15 12:00:00')]))
+        zto=Mock();zto.call.return_value={'data':{'billCount':1,'totalFee':2}}
+        cost=Mock();cost.upload.return_value='test-job';cost.call.return_value={'state':'done','stats':{'new':1,'duplicate':0}}
+        with patch.object(sync,'download_task_file') as download:
+            sync.process_day(self.day,{},lambda r:None,zto,cost,'g',self.root/'archive',('test-task',str(source)),self.root,sleep)
+            download.assert_not_called()
+
+    def test_download_failure_keeps_original_and_cleans_temp(self):
+        import io
+        from unittest.mock import Mock,patch
+        client=Mock();client.call.return_value={'data':{'results':{'fetchLinkApi':'https://file-storage.gw.zt-express.com/d?signature=private'}}}
+        target=self.root/'raw.xlsx';target.write_bytes(b'original')
+        for failure in (io.BytesIO(b'not-xlsx'),sync.http.client.IncompleteRead(b'partial'),OSError('private URL')):
+            opener=Mock();opener.open.side_effect=[failure]
+            with patch.object(sync.urllib.request,'build_opener',return_value=opener):
+                with self.assertRaises(sync.SyncError) as caught:sync.download_task_file(client,'test-task',target)
+            self.assertNotIn('private',str(caught.exception));self.assertEqual(target.read_bytes(),b'original')
+            self.assertFalse(list(self.root.glob('*.partial')))
+
+    def test_download_rejects_non_file_service_and_redirects(self):
+        from unittest.mock import Mock,patch
+        client=Mock()
+        for url in ('http://file-storage.gw.zt-express.com/d','https://public.example/d','https://file-storage.gw.zt-express.com.evil.test/d','file:///tmp/file.xlsx','https://user:password@file-storage.gw.zt-express.com/d',None):
+            client.call.return_value={'data':{'results':{'fetchLinkApi':url}}}
+            with patch.object(sync.urllib.request,'build_opener') as opener:
+                with self.assertRaises(sync.SyncError):sync.download_task_file(client,'test-task',self.root/'raw.xlsx')
+                opener.assert_not_called()
+        self.assertIsNone(sync.NoRedirect().redirect_request(None,None,302,None,None,'https://public.example'))
+
+    def test_malformed_workbook_xml_is_invalid_download(self):
+        import zipfile
+        file=self.root/'broken.xlsx'
+        with zipfile.ZipFile(file,'w') as z:
+            for name in ('[Content_Types].xml','_rels/.rels','xl/_rels/workbook.xml.rels'):z.writestr(name,'<valid/>')
+            z.writestr('xl/workbook.xml','<broken')
+        with self.assertRaises(sync.SyncError):sync.validate_xlsx(file)
+
+    def test_exhausted_run_reports_task_and_auto_rerun_does_not_recreate(self):
+        import io
+        from contextlib import redirect_stdout
+        from types import SimpleNamespace
+        from unittest.mock import Mock,patch
+        source=self.root/'bad.xlsx';source.write_bytes(b'bad-image')
+        key=self.root/'key.json';key.write_text(json.dumps({'apiKey':'synthetic-key'}))
+        day=sync.dt.datetime.now(sync.SHANGHAI).date()-dt.timedelta(days=1)
+        args=SimpleNamespace(export_root=str(self.root),home=str(self.root/'sync'),raw_root=str(self.root/'archive'),start=str(day),end=str(day),recheck_days=3,resume=[],key_file=str(key),zto_url='http://127.0.0.1:9800',cost_url='http://127.0.0.1:8888')
+        zto=Mock();zto.call.return_value={'data':{'results':{'createJob':{'taskId':'test-task','filePath':str(source)}}}}
+        cost=Mock();cost.headers={}
+        def cost_call(path,*args,**kwargs):
+            return {'/api/health':{'ok':True,'version':'3.2.1'},'/api/bootstrap':{'token':'test-token'},'/api/v2/batches/start':{'id':'test-group'},'/api/v2/batches/finish':{}}[path]
+        cost.call.side_effect=cost_call
+        with patch.object(sync,'HTTP',side_effect=[zto,cost,zto,cost]),patch.object(sync,'download_task_file',side_effect=sync.SyncError('bad')) as download,patch.object(sync.time,'sleep') as sleep:
+            for _ in range(2):
+                output=io.StringIO()
+                with redirect_stdout(output):self.assertEqual(sync.run(args),1)
+                self.assertIn('结果未确认',output.getvalue());self.assertIn('taskId=test-task',output.getvalue())
+                self.assertNotIn('synthetic-key',output.getvalue())
+            self.assertEqual(download.call_count,5);self.assertEqual(sleep.call_count,5)
+        self.assertEqual(zto.call.call_count,1);cost.upload.assert_not_called()
+        journal=sync.Journal(self.root/'sync')
+        try:self.assertEqual(journal.previous(day)['status'],'uncertain')
+        finally:journal.close()
+        self.assertEqual(json.loads((self.root/'sync/sync_latest.json').read_text())['status'],'failed')
 
     def test_rows_headers_and_reconciliation(self):
         file=self.file([row('test-1',2,hand='2026-10-15 12:00:00'),row('test-2',3,hand='2026-10-16 11:59:59')])

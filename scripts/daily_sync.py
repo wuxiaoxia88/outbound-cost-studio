@@ -11,11 +11,13 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -133,8 +135,10 @@ class Journal:
 def validate_xlsx(path):
     try:
         with zipfile.ZipFile(path) as z:
-            if 'xl/workbook.xml' not in z.namelist() or z.testzip(): raise ValueError('invalid workbook')
-    except (OSError, ValueError, zipfile.BadZipFile):
+            required = ('[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels')
+            if not set(required).issubset(z.namelist()) or z.testzip(): raise ValueError('invalid workbook')
+            for name in required: ET.fromstring(z.read(name))
+    except (OSError, ValueError, RuntimeError, NotImplementedError, ET.ParseError, zipfile.BadZipFile):
         raise SyncError('下载文件不是完整 Excel，请核对原平台下载结果') from None
 
 
@@ -197,6 +201,56 @@ def export_file(client, day, sleep=time.sleep, download_root=None):
             sleep(180)
 
 
+def download_task_file(client, task, target):
+    """只刷新原任务的签名链接；下载请求不携带本机 API Key。"""
+    result = client.call('/api/workflows/outbound-bill-export/fetch-download-link', {'taskId': task})
+    try:
+        url = result['data']['results']['fetchLinkApi']
+        u = urllib.parse.urlsplit(url)
+        if (not isinstance(url, str) or u.scheme != 'https' or
+                u.hostname != 'file-storage.gw.zt-express.com' or u.port not in (None, 443) or
+                u.username or u.password or u.fragment):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise SyncError('原任务下载链接无效或不是支持的文件服务') from None
+    # 单独的无凭据 opener，拒绝跳转；签名 URL 不写日志或状态文件。
+    opener = urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({}))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.outbound-', suffix='.partial', delete=False) as out:
+            tmp = Path(out.name)
+            with opener.open(urllib.request.Request(url), timeout=300) as response:
+                shutil.copyfileobj(response, out, 1 << 20)
+            out.flush(); os.fsync(out.fileno())
+        validate_xlsx(tmp)
+        os.replace(tmp, target)
+    except (OSError, ValueError, http.client.HTTPException):
+        raise SyncError('原任务文件下载未完成') from None
+    finally:
+        if tmp is not None: tmp.unlink(missing_ok=True)
+
+
+def recover_download(client, task, source, record, save, download_root=None, sleep=None):
+    """坏文件最多额外重下五次，计数落盘；自动接续不重置预算。"""
+    sleep = sleep or time.sleep
+    root = Path(download_root or Path.home()/'zto-exports').expanduser().resolve()
+    target = source.resolve()
+    if not target.is_relative_to(root): target = root/f'sync-{task}.xlsx'
+    record.update(source=str(target), downloadState='retrying'); save(record)
+    for attempt in range(record.get('downloadAttempts', 0) + 1, 6):
+        record['downloadAttempts'] = attempt; save(record)
+        sleep(60)
+        try: download_task_file(client, task, target)
+        except SyncError:
+            # 取链接超时也只允许继续取同一任务的链接，绝不重新创建导出。
+            continue
+        record.update(downloadState='recovered'); save(record)
+        return target
+    record.update(downloadState='exhausted'); save(record)
+    raise UncertainExport(f'结果未确认：原任务重取链接重下 5 次仍未通过校验；taskId={task}；请核对后用 --resume 接续')
+
+
 def archive(source, target):
     target.parent.mkdir(parents=True, exist_ok=True)
     if source.resolve() == target.resolve(): return
@@ -216,11 +270,12 @@ def archive(source, target):
     os.replace(tmp,target); source.unlink()
 
 
-def process_day(day, record, save, zto, cost, group, raw_root, resume=None, download_root=None):
+def process_day(day, record, save, zto, cost, group, raw_root, resume=None, download_root=None, sleep=None):
     if resume:
         source, task = Path(resume[1]).expanduser(), resume[0]
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task): raise SyncError('接续任务标识无效')
         record.update(taskId=task, source=str(source), status='exported')
+        record.pop('downloadAttempts', None); record.pop('downloadState', None)
     elif record.get('file') and Path(record['file']).is_file() and record.get('status') in ('exported','validated','importing','import_failed','uncertain'):
         source, task = Path(record['file']), record['taskId']
     elif record.get('source') and record.get('status') in ('exported','validated','importing','import_failed','uncertain'):
@@ -234,7 +289,7 @@ def process_day(day, record, save, zto, cost, group, raw_root, resume=None, down
     target = raw_root/'raw'/'outbound_detail'/day.strftime('%Y/%m')/f'{day}__{task}.xlsx'
     record.update(file=str(target),status='exported'); save(record)
     try: validate_xlsx(source if source.is_file() else target)
-    except SyncError: raise UncertainExport('导出任务已创建，但下载不是有效 Excel；请核对原任务后用 --resume 接续') from None
+    except SyncError: source = recover_download(zto, task, source, record, save, download_root, sleep)
     archive(source,target)
     record.update(inspect_file(target,day)); save(record)
     check = zto.call('/api/data/outbound-bill/query', {**window(day),'pageSize':10})['data']
