@@ -100,4 +100,22 @@ class RegionsTest(unittest.TestCase):
         self.assertEqual(analysis.analysis(self.full,self.req)['overview']['n'],378)
         self.assertEqual(analysis.analysis(self.full,none)['overview']['n'],0)
 
+    def test_report_ranking_default_30_all_and_immutable_sort(self):
+        x=analysis.analysis(self.full,self.req)
+        template=x['ranking'][0]
+        x['ranking']=[{**copy.deepcopy(template),'name':f'演示{i:02d}','total':{**template['total'],'n':i},'previous':{'delta':{'n':100-i,'avg':i/10}} if i>5 else {'delta':None}} for i in range(1,36)]
+        snap=reports.remember(self.full,x);req={'snapshotId':snap['snapshotId'],'modules':['ranking']}
+        original=copy.deepcopy(x['ranking'])
+        default=reports.sheets(self.full,req)[0][2]
+        self.assertEqual(len(default),30);self.assertEqual([r[0] for r in default],[f'演示{i:02d}' for i in range(35,5,-1)])
+        allrows=reports.sheets(self.full,{**req,'rankRows':'all'})[0][2]
+        self.assertEqual(len(allrows),35);self.assertEqual(allrows[:30],default)
+        reverse=reports.sheets(self.full,{**req,'rankSort':'n','rankAsc':True})[0][2]
+        self.assertEqual([r[0] for r in reverse],[f'演示{i:02d}' for i in range(1,31)])
+        changed=reports.sheets(self.full,{**req,'rankSort':'nChange','rankRows':'all'})[0][2]
+        self.assertEqual(changed[0][0],'演示06');self.assertEqual([r[0] for r in changed[-5:]],[f'演示{i:02d}' for i in range(1,6)])
+        self.assertEqual(x['ranking'],original)
+        self.assertEqual(len(reports.ranking_rows(original[:4],{})),4)
+        with self.assertRaises(ValueError):reports.sheets(self.full,{**req,'rankRows':'arbitrary'})
+
 if __name__=='__main__':unittest.main()
