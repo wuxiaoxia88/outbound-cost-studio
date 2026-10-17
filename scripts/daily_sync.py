@@ -182,23 +182,80 @@ def inspect_file(path, day, expected=EXPECTED):
     except MemoryError: return read(streaming_rows(path))
 
 
-def export_file(client, day, sleep=time.sleep, download_root=None):
-    for attempt in range(3):
+def matching_export(client, record):
+    """读完本次创建时间范围内的所有分页，再确定唯一任务，不使用最新任务。"""
+    started = dt.datetime.fromisoformat(record['createStarted'])
+    query = {'startCreateTime': (started-dt.timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S'),
+             'endCreateTime': dt.datetime.now(SHANGHAI).strftime('%Y-%m-%d %H:%M:%S')}
+    matches = []; seen = set(); expected_total = None; read = 0
+    for page in range(1, 101):
+        result = client.call('/api/data/outbound-bill-export/fetchTaskApi', {
+            'pageDTO': {'pageNum':page,'pageSize':100,'sortField':'createTime','sortType':'DESC','needTotalCount':True},
+            'fetchTaskDTO':query})
         try:
-            result = client.call('/api/workflows/outbound-bill-export/one-click-download', window(day), timeout=900)
-            job = result['data']['results']['createJob']
-            if job.get('ok') is False or (job.get('taskId') and not job.get('filePath')): raise UncertainExport('原任务已创建但下载未确认，请核对后用 --resume 接续')
-            path, task = job['filePath'], str(job['taskId'])
-            if not path or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task): raise SyncError('导出任务标识无效')
-            source=Path(path).expanduser().resolve()
-            allowed=Path(download_root or Path.home()/'zto-exports').expanduser().resolve()
-            if not source.is_relative_to(allowed) or source.suffix.lower()!='.xlsx':
-                raise UncertainExport('导出文件不在指定下载目录内，请核对原任务')
-            return source, task
-        except UncertainExport: raise  # 超时不能证明失败，先接续原任务，避免重复创建。
-        except (SyncError, KeyError, TypeError) as ex:
-            if attempt == 2: raise SyncError('导出失败（已重试 2 次）') from ex
-            sleep(180)
+            data = result['data']; rows = data['data']; total = data['total']
+            if not isinstance(rows,list) or type(total) is not int or total<0: raise ValueError
+            if expected_total is not None and total != expected_total: raise ValueError
+            expected_total = total
+            for task in rows:
+                task_id = task.get('id') or task.get('taskId')
+                if not isinstance(task_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task_id): raise ValueError
+                if task_id in seen: raise ValueError
+                seen.add(task_id)
+                # 平台不回显 jobName；唯一 fileName 必须位于任务名起始且紧跟下划线。
+                name=task.get('taskName')
+                if isinstance(name,str) and name.startswith(record['fileName']+'_'):
+                    matches.append({**task,'id':task_id})
+            read += len(rows)
+            if read > total or (not rows and read < total): raise ValueError
+        except (KeyError,TypeError,AttributeError,ValueError):
+            raise UncertainExport(f"导出任务列表不完整或已变化，未关联任务；jobName={record['jobName']}") from None
+        if len(matches)>1:
+            raise UncertainExport(f"发现多条同名导出任务，未下载；jobName={record['jobName']}")
+        if read == total: return matches[0] if matches else None
+    raise UncertainExport(f"导出任务分页超过安全上限，未关联任务；jobName={record['jobName']}")
+
+
+def export_file(client, day, record, save, run_id, sleep=None, download_root=None):
+    sleep = sleep or time.sleep
+    if not record.get('jobName'):
+        # 创建前持久化名字和时间；中断后只按原名字接续，不重新创建任务。
+        name=f'出港账单(包补收)-业务账单-成本同步-{day}-{run_id[:8]}'
+        record.update(jobName=name,fileName=name,
+                      exportRunId=run_id,createStarted=now(),status='exporting')
+        save(record)
+        try:
+            client.call('/api/workflows/outbound-bill-export/create-export-task',
+                        {**window(day),'jobName':record['jobName'],'fileName':record['fileName']},timeout=120)
+        except SyncError:
+            raise UncertainExport(f"创建响应未确认，未重建任务；jobName={record['jobName']}；重跑将按原名查询") from None
+    if not record.get('fileName'):
+        raise UncertainExport('旧任务没有唯一 fileName，不能自动关联；请核对原任务后人工接续或指定 --restart-export 日期')
+    # 列表存在短暂延迟，最多等 60 秒出现；已找到的任务最多等 15 分钟完成。
+    for poll in range(181):
+        task = matching_export(client,record)
+        if task is None:
+            if poll>=12 or record.get('taskId'):
+                raise UncertainExport(f"找不到完整同名任务，未下载；jobName={record['jobName']}")
+        else:
+            if record.get('taskId') and record['taskId'] != task['id']:
+                raise UncertainExport(f"同名任务标识已变化，未下载；jobName={record['jobName']}")
+            record.update(taskId=task['id'],matchedFileName=record['fileName'],matchedTaskName=task['taskName'],
+                          taskCreated=task.get('createTime'),taskStatus=task.get('status'))
+            save(record)
+            status = task.get('status')
+            if status in (4,'FAIL'):
+                raise UncertainExport(f"原导出任务失败，未重建；taskId={task['id']}；jobName={record['jobName']}")
+            # 该接口实测 2 为执行中、3 为成功；未知状态只等待，不能推断成功。
+            if status in (3,'SUCCESS'):
+                root = Path(download_root or Path.home()/'zto-exports').expanduser().resolve()
+                source = root/f"sync-{task['id']}.xlsx"
+                record.update(source=str(source),status='exported');save(record)
+                try: download_task_file(client,task['id'],source)
+                except SyncError: source=recover_download(client,task['id'],source,record,save,root,sleep)
+                return source,task['id']
+        if poll<180: sleep(5)
+    raise UncertainExport(f"原导出任务等待超时，未重建；jobName={record['jobName']}")
 
 
 def download_task_file(client, task, target):
@@ -270,7 +327,7 @@ def archive(source, target):
     os.replace(tmp,target); source.unlink()
 
 
-def process_day(day, record, save, zto, cost, group, raw_root, resume=None, download_root=None, sleep=None):
+def process_day(day, record, save, zto, cost, group, raw_root, resume=None, download_root=None, sleep=None, run_id=None):
     if resume:
         source, task = Path(resume[1]).expanduser(), resume[0]
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task): raise SyncError('接续任务标识无效')
@@ -281,10 +338,13 @@ def process_day(day, record, save, zto, cost, group, raw_root, resume=None, down
     elif record.get('source') and record.get('status') in ('exported','validated','importing','import_failed','uncertain'):
         source, task = Path(record['source']), record['taskId']
     else:
-        if record.get('status') in ('exporting','uncertain'):
+        if record.get('status') in ('exporting','uncertain') and not record.get('jobName'):
             raise UncertainExport('上次导出结果未确认，请查原平台任务后用 --resume 接续')
-        record.clear(); record['status']='exporting'; save(record)
-        source, task = export_file(zto, day, download_root=download_root)
+        if not record.get('jobName'):
+            supersedes=record.get('supersedes');record.clear()
+            if supersedes:record['supersedes']=supersedes
+        record['status']='exporting'; save(record)
+        source, task = export_file(zto,day,record,save,run_id or uuid.uuid4().hex,sleep,download_root)
         record.update(taskId=task,source=str(source),status='exported'); save(record)
     target = raw_root/'raw'/'outbound_detail'/day.strftime('%Y/%m')/f'{day}__{task}.xlsx'
     record.update(file=str(target),status='exported'); save(record)
@@ -312,6 +372,7 @@ def process_day(day, record, save, zto, cost, group, raw_root, resume=None, down
         time.sleep(1)
     stats = result['stats']
     if stats.get('conflict'): raise SyncError('导入出现待核冲突，请核对成本库')
+    record.pop('error',None)
     record.update(status='done',new=max(0,stats['new']-stats.get('replaced',0)),replaced=stats.get('replaced',0),duplicate=stats['duplicate'])
     save(record)
     return record
@@ -325,11 +386,14 @@ def run(args):
     if end >= dt.datetime.now(SHANGHAI).date(): raise SyncError('只能同步已结束的业务日')
     resumes = {dt.date.fromisoformat(d):(t,p) for d,t,p in args.resume}
     if any(d<start or d>end for d in resumes): raise SyncError('--resume 日期必须在本次范围内')
+    restarts = {dt.date.fromisoformat(d) for d in getattr(args,'restart_export',[])}
+    if any(d<start or d>end for d in restarts) or restarts.intersection(resumes):
+        raise SyncError('--restart-export 日期必须在本次范围内，且不能同时 --resume 同一日期')
     with process_lock(home):
         key = json.loads(Path(args.key_file).expanduser().read_text())['apiKey']
         zto = HTTP(args.zto_url,{'X-API-Key':key}); cost = HTTP(args.cost_url)
         health = cost.call('/api/health')
-        if not health.get('ok') or health.get('version')!='3.2.1': raise SyncError('成本服务版本不是 3.2.1，请先完成发布')
+        if not health.get('ok') or health.get('version') not in ('3.2.1','3.2.2'): raise SyncError('成本服务需为 3.2.1 或 3.2.2，请先核对版本')
         cost.headers['X-App-Token']=cost.call('/api/bootstrap')['token']
         journal=Journal(home); rid=uuid.uuid4().hex; journal.start(rid)
         group=None; started=time.monotonic(); records=[]; failed=False
@@ -340,7 +404,10 @@ def run(args):
                 # 完成过的日期需重新导出，才能发现后续补录/改价。
                 if record.get('status')=='done': record={}
                 try:
-                    process_day(day,record,lambda r:journal.save(rid,day,r),zto,cost,group,raw_root,resumes.get(day),args.export_root)
+                    if day in restarts and record:
+                        if record.get('status')=='importing':raise SyncError('原导入仍待核对，不能重新创建导出任务')
+                        record={'supersedes':{k:record[k] for k in ('exportRunId','jobName','fileName','taskId','status') if k in record}}
+                    process_day(day,record,lambda r:journal.save(rid,day,r),zto,cost,group,raw_root,resumes.get(day),args.export_root,run_id=rid)
                 except Exception as ex:
                     failed=True
                     record.update(status='uncertain' if isinstance(ex,UncertainExport) else 'import_failed' if record.get('status') in ('importing','validated') else 'failed', error=str(ex) if isinstance(ex,SyncError) else '处理异常，请核对服务状态和原始文件')
@@ -378,6 +445,7 @@ def main():
     go=sub.add_parser('run'); go.add_argument('--from',dest='start'); go.add_argument('--to',dest='end')
     go.add_argument('--recheck-days',type=int,default=3)
     go.add_argument('--resume',nargs=3,action='append',default=[],metavar=('DAY','TASK_ID','FILE'),help='核实原任务后接续已有文件，不重复创建导出')
+    go.add_argument('--restart-export',action='append',default=[],metavar='DAY',help='人工确认旧任务不再使用后，对指定日期另建导出；旧日志保留')
     status=sub.add_parser('status');status.add_argument('--days',type=int,default=7)
     sub.add_parser('backup')
     args=parser.parse_args()

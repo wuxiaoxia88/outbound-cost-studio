@@ -1,3 +1,3 @@
 """Application release identity; data revisions are separate."""
-VERSION = "3.2.1"
+VERSION = "3.2.2"
 RELEASED = "2026-10-17"

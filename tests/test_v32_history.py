@@ -3,6 +3,7 @@ import tempfile, unittest
 from pathlib import Path
 from server import workbook
 from v2.store import Warehouse
+from v2.version import VERSION
 from v2 import analysis as a, history as h
 from test_v2_engine import H,row
 
@@ -84,6 +85,6 @@ class WarehouseHistory(unittest.TestCase):
                 self.assertEqual(history['hiddenMonthCount'],hidden)
                 self.assertTrue(all(x['n']>0 for x in history['months']))
     def test_meta_version_is_not_data_version(self):
-        m=a.meta(self.wh);self.assertTrue(m['features']['handoverBusinessDay']);self.assertEqual(m['version'],'3.2.1');self.assertIsInstance(m['dataVersion'],int)
+        m=a.meta(self.wh);self.assertTrue(m['features']['handoverBusinessDay']);self.assertEqual(m['version'],VERSION);self.assertIsInstance(m['dataVersion'],int)
 
 if __name__=='__main__':unittest.main()

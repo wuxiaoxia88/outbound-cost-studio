@@ -19,6 +19,7 @@ import duckdb
 from server import workbook,Handler,ThreadingHTTPServer
 from v2 import business_day,imports,operations,routes
 from v2.store import Warehouse
+from v2.version import VERSION
 from test_v2_engine import H,row,ROOT
 from scripts import daily_sync as sync,watchdog,prepare_232
 
@@ -93,7 +94,7 @@ class Operations(unittest.TestCase):
                 if token:h['X-App-Token']=token
                 if origin:h['Origin']=origin
                 return urllib.request.urlopen(urllib.request.Request(url+path,data=body,headers=h))
-            with call('cost.example.test') as response:self.assertEqual(json.load(response)['version'],'3.2.1')
+            with call('cost.example.test') as response:self.assertEqual(json.load(response)['version'],VERSION)
             with self.assertRaises(urllib.error.HTTPError):call('evil.example')
             with self.assertRaises(urllib.error.HTTPError):call('cost.example.test','/api/v2/backup',b'{}')
             with self.assertRaises(urllib.error.HTTPError):call('cost.example.test','/api/v2/backup',b'{}',server.token,'https://evil.example')
@@ -136,7 +137,9 @@ class SyncTests(unittest.TestCase):
         valid=workbook(H,[row('test-1',2,hand='2026-10-15 12:00:00')])
         zto=Mock();saved=[];links=[]
         def api(path,body,timeout=60):
-            if 'one-click-download' in path:return {'data':{'results':{'createJob':{'taskId':'test-task','filePath':str(f)}}}}
+            if 'create-export-task' in path:
+                api.name=body['jobName'];return {'data':{'results':{'createJob':True}}}
+            if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':'test-task','taskName':api.name+'_file.xlsx','status':3}]}}
             if 'fetch-download-link' in path:
                 self.assertEqual(body,{'taskId':'test-task'});links.append(len(links)+1)
                 return {'data':{'results':{'fetchLinkApi':f'https://file-storage.gw.zt-express.com/download?signature=secret{len(links)}'}}}
@@ -145,11 +148,11 @@ class SyncTests(unittest.TestCase):
         opener=Mock();opener.open.side_effect=[io.BytesIO(b'jpeg'),io.BytesIO(b'PK broken zip'),io.BytesIO(valid)];sleep=Mock()
         with patch.object(sync.urllib.request,'build_opener',return_value=opener):
             record=sync.process_day(self.day,{},lambda r:saved.append(dict(r)),zto,cost,'g',self.root/'raw',download_root=self.root,sleep=sleep)
-        self.assertEqual(record['status'],'done');self.assertEqual(record['downloadAttempts'],3)
-        self.assertEqual(record['downloadState'],'recovered');self.assertEqual(sleep.call_args_list,[call(60)]*3)
-        self.assertEqual(sum('one-click-download' in c.args[0] for c in zto.call.call_args_list),1)
+        self.assertEqual(record['status'],'done');self.assertEqual(record['downloadAttempts'],2)
+        self.assertEqual(record['downloadState'],'recovered');self.assertEqual(sleep.call_args_list,[call(60)]*2)
+        self.assertEqual(sum('create-export-task' in c.args[0] for c in zto.call.call_args_list),1)
         self.assertEqual(links,[1,2,3]);self.assertEqual(cost.upload.call_count,1)
-        self.assertEqual(Path(record['file']).read_bytes(),valid);self.assertFalse(f.exists())
+        self.assertEqual(Path(record['file']).read_bytes(),valid);self.assertEqual(f.read_bytes(),b'original-error-image')
         self.assertFalse(list(self.root.glob('*.partial')));self.assertNotIn('signature',json.dumps(saved))
         for c in opener.open.call_args_list:self.assertEqual(c.args[0].headers,{})
 
@@ -206,7 +209,12 @@ class SyncTests(unittest.TestCase):
         key=self.root/'key.json';key.write_text(json.dumps({'apiKey':'synthetic-key'}))
         day=sync.dt.datetime.now(sync.SHANGHAI).date()-dt.timedelta(days=1)
         args=SimpleNamespace(export_root=str(self.root),home=str(self.root/'sync'),raw_root=str(self.root/'archive'),start=str(day),end=str(day),recheck_days=3,resume=[],key_file=str(key),zto_url='http://127.0.0.1:9800',cost_url='http://127.0.0.1:8888')
-        zto=Mock();zto.call.return_value={'data':{'results':{'createJob':{'taskId':'test-task','filePath':str(source)}}}}
+        zto=Mock()
+        def upstream(path,body,**kwargs):
+            if 'create-export-task' in path:
+                upstream.name=body['jobName'];return {}
+            return {'data':{'total':1,'data':[{'id':'test-task','taskName':upstream.name+'_file.xlsx','status':3}]}}
+        zto.call.side_effect=upstream
         cost=Mock();cost.headers={}
         def cost_call(path,*args,**kwargs):
             return {'/api/health':{'ok':True,'version':'3.2.1'},'/api/bootstrap':{'token':'test-token'},'/api/v2/batches/start':{'id':'test-group'},'/api/v2/batches/finish':{}}[path]
@@ -217,8 +225,8 @@ class SyncTests(unittest.TestCase):
                 with redirect_stdout(output):self.assertEqual(sync.run(args),1)
                 self.assertIn('结果未确认',output.getvalue());self.assertIn('taskId=test-task',output.getvalue())
                 self.assertNotIn('synthetic-key',output.getvalue())
-            self.assertEqual(download.call_count,5);self.assertEqual(sleep.call_count,5)
-        self.assertEqual(zto.call.call_count,1);cost.upload.assert_not_called()
+            self.assertEqual(download.call_count,6);self.assertEqual(sleep.call_count,5)
+        self.assertEqual(zto.call.call_count,2);cost.upload.assert_not_called()
         journal=sync.Journal(self.root/'sync')
         try:self.assertEqual(journal.previous(day)['status'],'uncertain')
         finally:journal.close()
@@ -231,13 +239,6 @@ class SyncTests(unittest.TestCase):
         f=self.file([row('test-3',2,hand='2026-10-16 12:00:00')],name='bad.xlsx');self.assertEqual(sync.inspect_file(f,self.day)['outsideWindow'],1)
         missing=self.file([['test-4']],['运单号'],'missing.xlsx')
         with self.assertRaises(sync.SyncError):sync.inspect_file(missing,self.day)
-    def test_export_retry_and_uncertain_is_not_resubmitted(self):
-        from unittest.mock import Mock
-        client=Mock();client.call.side_effect=[sync.SyncError('fail'),sync.SyncError('fail'),{'data':{'results':{'createJob':{'filePath':'/tmp/test.xlsx','taskId':'test-task'}}}}]
-        sleep=Mock();self.assertEqual(sync.export_file(client,self.day,sleep,download_root='/tmp')[1],'test-task');self.assertEqual(sleep.call_count,2)
-        client.call.side_effect=sync.UncertainExport('unknown');client.call.reset_mock()
-        with self.assertRaises(sync.UncertainExport):sync.export_file(client,self.day,sleep)
-        self.assertEqual(client.call.call_count,1)
     def test_archive_move_idempotent_and_conflict(self):
         src=self.root/'source.xlsx';src.write_bytes(b'first');dest=self.root/'target.xlsx'
         sync.archive(src,dest);self.assertFalse(src.exists());self.assertEqual(dest.read_bytes(),b'first')
@@ -259,12 +260,13 @@ class SyncTests(unittest.TestCase):
         class Zto:
             def __init__(self,outer):self.outer=outer;self.calls=0;self.fee=2;self.count=1
             def call(self,path,body,timeout=60):
-                if 'one-click' in path:
-                    self.calls+=1
-                    f=self.outer.file([row('test-1',self.fee,hand='2026-10-16 01:00:00')],name=f'export{self.calls}.xlsx')
-                    return {'data':{'results':{'createJob':{'taskId':f'task{self.calls}','filePath':str(f)}}}}
+                if 'create-export-task' in path:
+                    self.calls+=1;self.name=body['jobName'];return {}
+                if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':f'task{self.calls}','taskName':self.name+'_file.xlsx','status':3}]}}
                 return {'data':{'billCount':self.count,'totalFee':str(self.fee+Decimal('.01'))}}
         zto=Zto(self)
+        def download(client,task,target):target.write_bytes(workbook(H,[row('test-1',client.fee,hand='2026-10-16 01:00:00')]))
+        downloader=patch.object(sync,'download_task_file',side_effect=download);downloader.start()
         try:
             versions=[]
             for fee in (2,2,3):
@@ -278,7 +280,7 @@ class SyncTests(unittest.TestCase):
             gid=cost.call('/api/v2/batches/start',{})['id'];zto.count=2
             with self.assertRaises(sync.SyncError):sync.process_day(self.day,{},lambda r:None,zto,cost,gid,self.root/'raw',download_root=self.root)
             self.assertEqual(wh.version(),2)
-        finally:server.shutdown();server.server_close();thread.join();routes._warehouse=old;wh.con.close()
+        finally:downloader.stop();server.shutdown();server.server_close();thread.join();routes._warehouse=old;wh.con.close()
     def test_watchdog_cooldown_and_recovery(self):
         calls=[];restart=lambda:calls.append(True) or True;s={}
         for t in (1000,1060):s=watchdog.tick(s,False,t,restart)
@@ -309,9 +311,10 @@ class SyncTests(unittest.TestCase):
                 payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 self.server.requests.append(payload)
                 assert self.headers.get('X-API-Key')=='synthetic-key'
-                if 'one-click' in self.path:
-                    day=payload['startTime'][:10];f=outer.file([row('daily-'+day,2,hand=payload['startTime'])],name='job-'+str(len(self.server.requests))+'.xlsx')
-                    data={'results':{'createJob':{'ok':True,'taskId':'task-'+str(len(self.server.requests)),'filePath':str(f)}}}
+                if 'create-export-task' in self.path:
+                    self.server.task={'id':'task-'+str(len(self.server.requests)),'taskName':payload['fileName']+'_file.xlsx','status':3}
+                    self.server.hand=payload['startTime'];data={'results':{'createJob':True}}
+                elif 'fetchTaskApi' in self.path:data={'total':1,'data':[self.server.task]}
                 else:data={'billCount':2 if self.mismatch else 1,'totalFee':2}
                 body=json.dumps({'code':200,'status':'success','data':data}).encode();self.send_response(200);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
         upstream=ThreadingHTTPServer(('127.0.0.1',0),FakeZto);upstream.requests=[]
@@ -319,6 +322,8 @@ class SyncTests(unittest.TestCase):
         key=self.root/'key.json';key.write_text(json.dumps({'apiKey':'synthetic-key'}))
         day=sync.dt.datetime.now(sync.SHANGHAI).date()-dt.timedelta(days=1)
         args=SimpleNamespace(export_root=str(self.root),home=str(self.root/'cost'),raw_root=str(self.root/'archive'),start=str(day-dt.timedelta(days=2)),end=str(day),recheck_days=3,resume=[],key_file=str(key),zto_url='http://127.0.0.1:'+str(upstream.server_port),cost_url='http://127.0.0.1:'+str(server.server_port))
+        def download(client,task,target):target.write_bytes(workbook(H,[row('daily-'+upstream.hand[:10],2,hand=upstream.hand)]))
+        downloader=patch.object(sync,'download_task_file',side_effect=download);downloader.start()
         try:
             for i in range(2):
                 output=io.StringIO()
@@ -329,9 +334,9 @@ class SyncTests(unittest.TestCase):
             FakeZto.mismatch=True
             with redirect_stdout(io.StringIO()):self.assertEqual(sync.run(args),1)
             self.assertEqual(operations.health(wh)['lastSync']['status'],'failed');self.assertEqual(wh.version(),3)
-            self.assertTrue(all(x['queryDateType']==2 and x['startTime'].endswith('12:00:00') for x in upstream.requests))
+            self.assertTrue(all(x['queryDateType']==2 and x['startTime'].endswith('12:00:00') for x in upstream.requests if 'startTime' in x))
         finally:
-            upstream.shutdown();upstream.server_close();t.join();server.shutdown();server.server_close();thread.join();routes._warehouse=old;wh.con.close()
+            downloader.stop();upstream.shutdown();upstream.server_close();t.join();server.shutdown();server.server_close();thread.join();routes._warehouse=old;wh.con.close()
 
     def test_private_key_never_sent_to_nonlocal_address(self):
         for url in ('https://public.example','http://192.0.2.2:9800','http://user:secret@127.0.0.1:9800'):

@@ -2,7 +2,7 @@
 # 本机执行。--plan 只生成已跟踪源码归档与计划，不联系目标机。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-tag="${1:?用法: scripts/deploy_232.sh v3.2.1 [--plan]}"
+tag="${1:?用法: scripts/deploy_232.sh v3.2.2 [--plan]}"
 [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '必须使用版本标签'; exit 2; }
 git rev-parse --verify "refs/tags/$tag" >/dev/null
 remote="${COST_DEPLOY_SSH:-${USER}@192.168.3.232}"
