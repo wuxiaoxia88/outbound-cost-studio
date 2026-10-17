@@ -24,6 +24,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from v2.store import REQUIRED, calamine_rows, streaming_rows
 
+
+def version_ok(v):
+    try:return tuple(int(x) for x in str(v).split('.')[:3])>=(3,2,1)
+    except ValueError:return False
+
 try: SHANGHAI = ZoneInfo('Asia/Shanghai')
 except ZoneInfoNotFoundError: SHANGHAI = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
 EXPECTED = json.loads(Path(__file__).with_name('outbound_columns.json').read_text())
@@ -425,7 +430,7 @@ def run(args):
         key = json.loads(Path(args.key_file).expanduser().read_text())['apiKey']
         zto = HTTP(args.zto_url,{'X-API-Key':key}); cost = HTTP(args.cost_url)
         health = cost.call('/api/health')
-        if not health.get('ok') or health.get('version') not in ('3.2.1','3.2.2','3.3.0'): raise SyncError('成本服务需为 3.2.1、3.2.2 或 3.3.0，请先核对版本')
+        if not health.get('ok') or not version_ok(health.get('version')): raise SyncError('成本服务需为 3.2.1 或更新版本，请先核对版本')
         cost.headers['X-App-Token']=cost.call('/api/bootstrap')['token']
         journal=Journal(home); rid=uuid.uuid4().hex; journal.start(rid)
         group=None; started=time.monotonic(); records=[]; failed=False

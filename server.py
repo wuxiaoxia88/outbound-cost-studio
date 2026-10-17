@@ -7,6 +7,12 @@ from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 from v2 import routes
 
+
+class AppServer(ThreadingHTTPServer):
+    # The page loads ~14 assets at once; the default listen backlog of 5 made LAN browsers get connection resets.
+    request_queue_size = 128
+
+
 BASE = Path(__file__).resolve().parent
 APP_ID = 'outbound-cost-studio'
 def enc(data):
@@ -124,7 +130,7 @@ def main():
             if not args.no_browser: webbrowser.open(url)
             return
     except Exception: pass
-    server=ThreadingHTTPServer((args.host,args.port),Handler)
+    server=AppServer((args.host,args.port),Handler)
     server.allowed_hosts={h.lower() for h in args.allow_host} if args.allow_host else {'127.0.0.1:'+str(server.server_port),'localhost:'+str(server.server_port)}
     server.data_dir=args.data; server.token=secrets.token_urlsafe(32)
     try:
