@@ -1,4 +1,4 @@
-"""唯一导出任务关联；全部为合成接口响应，不访问真实服务或正式库。"""
+"""创建时刻+行数关联的合成测试；不访问真实平台或正式库。"""
 import datetime as dt
 import json
 from pathlib import Path
@@ -9,55 +9,66 @@ from unittest.mock import Mock, patch, call
 from scripts import daily_sync as sync
 
 
-class NamedExport(unittest.TestCase):
+class ExportAssociation(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
         self.day=dt.date(2026,10,12);self.rid='12345678'+'a'*24
         self.record={};self.saved=[];self.sleep=Mock();self.client=Mock()
-    def tearDown(self):self.tmp.cleanup()
+        self.base=dt.datetime.now(sync.SHANGHAI).replace(microsecond=0)
+        self.clock=patch.object(sync,'now',return_value=self.base.isoformat());self.clock.start()
+    def tearDown(self):self.clock.stop();self.tmp.cleanup()
     def save(self,r):self.saved.append(dict(r))
     def rows(self,*rows,total=None):return {'data':{'total':len(rows) if total is None else total,'data':list(rows)}}
-    def target(self,**fields):return {'id':'own-task','taskName':self.record['fileName']+'_网点业务账单运单明细_261017140000.xlsx','status':3,**fields}
+    def target(self,**fields):
+        return {'id':'own-task','taskName':sync.EXPORT_PREFIX+'261017140000.xlsx','status':3,
+                'createTime':self.base.strftime('%Y-%m-%d %H:%M:%S'),'total':100,**fields}
     def export(self):return sync.export_file(self.client,self.day,self.record,self.save,self.rid,self.sleep,self.root)
-    def seed(self):self.record.update(jobName=f'出港账单(包补收)-业务账单-成本同步-{self.day}-{self.rid[:8]}',createStarted=sync.now());self.record['fileName']=self.record['jobName']
+    def seed(self):self.record.update(associationVersion=sync.ASSOCIATION_VERSION,expectedBillCount=100,createStarted=self.base.isoformat(),exportRunId=self.rid)
 
-    def test_newer_unrelated_tasks_and_creation_return_id_are_ignored(self):
+    def test_count_then_t0_then_create_ignores_other_newer_tasks_and_response_id(self):
         def api(path,body,**kwargs):
+            if 'outbound-bill/query' in path:
+                self.assertFalse(self.record.get('createStarted'));return {'data':{'billCount':'100','totalFee':'201.234'}}
             if 'create-export-task' in path:
-                self.assertEqual(self.saved[-1]['jobName'],body['jobName'])
-                self.assertEqual(body,{**sync.window(self.day),'jobName':f'出港账单(包补收)-业务账单-成本同步-{self.day}-12345678','fileName':self.record['fileName']})
+                self.assertEqual(self.saved[-1]['expectedBillCount'],100)
+                self.assertEqual(self.saved[-1]['createStarted'],self.base.isoformat())
+                self.assertEqual(body,sync.window(self.day))  # 不传自定义名称。
                 return {'data':{'results':{'createJob':{'taskId':'wrong-latest-task'}}}}
-            self.assertIn('fetchTaskApi',path)
-            return self.rows({'id':'newer-other-task','taskName':'别人的任务','status':3},
-                             self.target(),{'id':'prefix-only','taskName':self.record['fileName']+'-other_file.xlsx','status':3})
+            return self.rows(self.target(id='newer-other',total=101),self.target(),
+                             self.target(id='previous-day',createTime=(self.base-dt.timedelta(seconds=6)).isoformat()))
         self.client.call.side_effect=api
-        with patch.object(sync,'download_task_file') as download:
-            path,task=self.export()
+        with patch.object(sync,'download_task_file') as download:path,task=self.export()
         self.assertEqual(task,'own-task');download.assert_called_once_with(self.client,task,self.root.resolve()/'sync-own-task.xlsx')
-        self.assertEqual(self.record['matchedFileName'],self.record['fileName']);self.sleep.assert_not_called()
-        self.assertEqual(self.record['exportRunId'],self.rid)
+        self.assertEqual(self.record['taskTotal'],100);self.assertEqual(self.record['billTotalFeeBefore'],'201.234')
         self.assertFalse(any('one-click' in c.args[0] for c in self.client.call.call_args_list))
+        self.assertEqual(self.record['exportRunId'],self.rid);self.sleep.assert_not_called()
 
-    def test_filename_prefix_requires_start_and_immediate_underscore(self):
-        self.seed();name=self.record['fileName']
-        self.client.call.return_value=self.rows(
-            self.target(id='wrong-1',taskName='prefix-'+name+'_file.xlsx'),
-            self.target(id='wrong-2',taskName=name+'-other_file.xlsx'),
-            self.target(id='wrong-3',taskName=name),
-            self.target(id='wrong-4',taskName=None,jobName=name),
-            self.target(id='own-task',taskName=name+'_file.xlsx'))
+    def test_time_window_inclusive_prefix_and_exact_count(self):
+        self.seed()
+        others=[self.target(id='wrong-prefix',taskName='other_'+sync.EXPORT_PREFIX),
+                self.target(id='short-prefix',taskName='出港账单(包补收)-业务账单'),
+                self.target(id='early',createTime=(self.base-dt.timedelta(seconds=5,microseconds=1)).isoformat()),
+                self.target(id='late',createTime=(self.base+dt.timedelta(seconds=120,microseconds=1)).isoformat()),
+                self.target(id='other-count',total=99),self.target(id='not-ready',total=None),
+                self.target(id='invalid-time',createTime='invalid'),self.target(id='bool-count',total=True)]
+        for seconds in (-5,0,120):
+            self.client.call.return_value=self.rows(*others,self.target(createTime=(self.base+dt.timedelta(seconds=seconds)).isoformat(),total='100'))
+            self.assertEqual(sync.matching_export(self.client,self.record)['id'],'own-task')
+        # 同一时刻的 UTC 表达也必须按北京时间正确比较。
+        self.client.call.return_value=self.rows(self.target(createTime=self.base.astimezone(dt.timezone.utc).isoformat()))
         self.assertEqual(sync.matching_export(self.client,self.record)['id'],'own-task')
 
-    def test_unique_match_on_later_page_and_duplicate_on_later_page(self):
-        self.seed()
-        first=self.rows({'id':'other','taskName':'other','status':3},total=2)
+    def test_unique_match_and_ambiguity_across_pages(self):
+        self.seed();first=self.rows(self.target(id='other',total=2),total=2)
         self.client.call.side_effect=[first,self.rows(self.target(),total=2)]
         self.assertEqual(sync.matching_export(self.client,self.record)['id'],'own-task')
-        self.assertEqual([c.args[1]['pageDTO']['pageNum'] for c in self.client.call.call_args_list],[1,2])
-        self.client.call.side_effect=[self.rows(self.target(),total=2),self.rows(self.target(id='duplicate-name'),total=2)]
-        with self.assertRaisesRegex(sync.UncertainExport,'多条同名'):sync.matching_export(self.client,self.record)
+        calls=self.client.call.call_args_list
+        self.assertEqual([c.args[1]['pageDTO']['pageNum'] for c in calls],[1,2])
+        self.assertEqual(calls[0].args[1]['fetchTaskDTO'],calls[1].args[1]['fetchTaskDTO'])
+        self.client.call.side_effect=[self.rows(self.target(),total=2),self.rows(self.target(id='second'),total=2)]
+        with self.assertRaisesRegex(sync.UncertainExport,'多条任务满足'):sync.matching_export(self.client,self.record)
 
-    def test_repeated_or_incomplete_pagination_fails_closed(self):
+    def test_repeated_incomplete_or_changed_pagination_fails_closed(self):
         self.seed()
         for responses in ([self.rows(self.target(),total=2),self.rows(self.target(),total=2)],
                           [self.rows(self.target(),total=2),self.rows(total=2)],
@@ -66,23 +77,27 @@ class NamedExport(unittest.TestCase):
             self.client.call.side_effect=responses
             with self.assertRaisesRegex(sync.UncertainExport,'列表不完整'):sync.matching_export(self.client,self.record)
 
-    def test_visibility_delay_and_pending_wait_then_success(self):
-        self.seed();self.client.call.side_effect=[self.rows(),self.rows(self.target(status=2)),self.rows(self.target())]
-        with patch.object(sync,'download_task_file'):self.export()
-        self.assertEqual(self.sleep.call_args_list,[call(5)]*2)
-        self.assertEqual(self.client.call.call_count,3)
+    def test_total_pending_then_status_two_then_success(self):
+        self.seed();self.client.call.side_effect=[self.rows(self.target(status=2,total=None)),self.rows(self.target(status=2)),self.rows(self.target())]
+        with patch.object(sync,'download_task_file') as download:self.export()
+        download.assert_called_once();self.assertEqual(self.sleep.call_args_list,[call(5)]*2)
 
-    def test_missing_name_fails_without_download_or_recreation(self):
-        self.seed();self.client.call.return_value=self.rows({'id':'latest','taskName':'other','status':3})
+    def test_zero_candidates_waits_five_minutes_and_never_downloads(self):
+        self.seed();self.client.call.return_value=self.rows(self.target(total=101))
         with patch.object(sync,'download_task_file') as download:
-            with self.assertRaisesRegex(sync.UncertainExport,'找不到完整同名'):self.export()
+            with self.assertRaisesRegex(sync.UncertainExport,'5分钟内未找到'):self.export()
             download.assert_not_called()
-        self.assertEqual(self.client.call.call_count,13);self.assertEqual(self.sleep.call_count,12)
+        self.assertEqual(self.client.call.call_count,61);self.assertEqual(self.sleep.call_args_list,[call(5)]*60)
         self.assertTrue(all('fetchTaskApi' in c.args[0] for c in self.client.call.call_args_list))
+        # 接续不重新获得5分钟预算，也不再次创建。
+        self.client.call.reset_mock();self.sleep.reset_mock()
+        with patch.object(sync,'now',return_value=(self.base+dt.timedelta(minutes=6)).isoformat()):
+            with self.assertRaisesRegex(sync.UncertainExport,'5分钟内未找到'):self.export()
+        self.assertEqual(self.client.call.call_count,1);self.sleep.assert_not_called()
 
-    def test_duplicate_failed_changed_id_and_unknown_status_do_not_download(self):
+    def test_ambiguous_failed_changed_id_and_unknown_status_do_not_download(self):
         self.seed()
-        cases=[(self.rows(self.target(),self.target(id='second')),'多条同名'),
+        cases=[(self.rows(self.target(),self.target(id='second')),'多条任务满足'),
                (self.rows(self.target(status=4)),'原导出任务失败'),
                (self.rows(self.target(status=1)),'等待超时')]
         for response,reason in cases:
@@ -93,59 +108,54 @@ class NamedExport(unittest.TestCase):
         self.record['taskId']='pinned-original';self.client.call.return_value=self.rows(self.target())
         with self.assertRaisesRegex(sync.UncertainExport,'标识已变化'):self.export()
 
-    def test_creation_timeout_is_persisted_and_next_run_resumes_original_name(self):
-        self.client.call.side_effect=sync.UncertainExport('timeout')
+    def test_creation_timeout_resumes_original_window_and_count_without_requery_or_create(self):
+        self.client.call.side_effect=[{'data':{'billCount':100,'totalFee':200}},sync.UncertainExport('timeout')]
         with self.assertRaisesRegex(sync.UncertainExport,'创建响应未确认'):self.export()
-        self.assertEqual(self.client.call.call_count,1);name=self.record['jobName']
+        self.assertEqual(self.client.call.call_count,2);t0=self.record['createStarted']
         self.client.call.reset_mock();self.client.call.side_effect=None;self.client.call.return_value=self.rows(self.target())
-        with patch.object(sync,'download_task_file'):
-            sync.export_file(self.client,self.day,self.record,self.save,'different-run-id',self.sleep,self.root)
-        self.assertEqual(self.record['jobName'],name)
+        with patch.object(sync,'now',return_value=(self.base+dt.timedelta(minutes=8)).isoformat()),patch.object(sync,'download_task_file'):
+            sync.export_file(self.client,self.day,self.record,self.save,'different-run',self.sleep,self.root)
+        self.assertEqual(self.record['createStarted'],t0);self.assertEqual(self.record['expectedBillCount'],100)
         self.assertEqual(self.client.call.call_count,1);self.assertIn('fetchTaskApi',self.client.call.call_args.args[0])
 
-    def test_legacy_jobname_without_filename_does_not_create_or_guess(self):
-        self.seed();self.record.pop('fileName')
-        with self.assertRaisesRegex(sync.UncertainExport,'旧任务没有唯一 fileName'):self.export()
+    def test_invalid_count_fails_before_creating_and_legacy_cannot_reassociate(self):
+        for n in (None,True,-1,'NaN','Infinity','1.5'):
+            self.record.clear();self.client.call.return_value={'data':{'billCount':n,'totalFee':2}}
+            with self.assertRaises(sync.SyncError):self.export()
+            self.assertNotIn('createStarted',self.record)
+        self.client.call.reset_mock();self.record.update(createStarted=self.base.isoformat(),jobName='old')
+        with self.assertRaisesRegex(sync.UncertainExport,'旧任务缺少创建前票数'):self.export()
         self.client.call.assert_not_called()
 
-    def test_business_days_and_runs_have_different_names(self):
-        self.client.call.side_effect=sync.UncertainExport('timeout');names=[]
-        for day,rid in ((self.day,self.rid),(self.day+dt.timedelta(days=1),self.rid),(self.day,'87654321'+'b'*24)):
-            record={}
-            with self.assertRaises(sync.UncertainExport):sync.export_file(self.client,day,record,self.save,rid,self.sleep,self.root)
-            names.append(record['jobName'])
-        self.assertEqual(len(set(names)),3)
-
-    def test_matching_failure_reaches_run_summary_journal_and_exit_code(self):
+    def test_failure_summary_restart_history_and_stop_next_day(self):
         import io
         from contextlib import redirect_stdout
         from types import SimpleNamespace
         key=self.root/'key.json';key.write_text(json.dumps({'apiKey':'synthetic-key'}))
-        args=SimpleNamespace(home=str(self.root/'sync'),raw_root=str(self.root/'raw'),start=str(self.day),end=str(self.day),recheck_days=3,resume=[],key_file=str(key),zto_url='http://127.0.0.1:9800',cost_url='http://127.0.0.1:8888',export_root=str(self.root))
+        args=SimpleNamespace(home=str(self.root/'sync'),raw_root=str(self.root/'raw'),start=str(self.day),end=str(self.day+dt.timedelta(days=1)),recheck_days=3,resume=[],key_file=str(key),zto_url='http://127.0.0.1:9800',cost_url='http://127.0.0.1:8888',export_root=str(self.root))
         cost=Mock();cost.headers={}
         cost.call.side_effect=lambda p,*a,**k:{'/api/health':{'ok':True,'version':'3.2.2'},'/api/bootstrap':{'token':'test'},'/api/v2/batches/start':{'id':'g'},'/api/v2/batches/finish':{}}[p]
         def api(path,body,**kwargs):
-            if 'create-export-task' in path:
-                self.record.update(jobName=body['jobName'],fileName=body['fileName']);return {}
+            if 'outbound-bill/query' in path:return {'data':{'billCount':100,'totalFee':200}}
+            if 'create-export-task' in path:return {}
             return self.rows(self.target(),self.target(id='ambiguous-second'))
         self.client.call.side_effect=api
-        with patch.object(sync,'HTTP',side_effect=[self.client,cost]*3),patch.object(sync.time,'sleep'):
+        with patch.object(sync,'now',side_effect=lambda:dt.datetime.now(sync.SHANGHAI).isoformat()),patch.object(sync,'HTTP',side_effect=[self.client,cost]*3),patch.object(sync.time,'sleep'):
             out=io.StringIO()
             with redirect_stdout(out):self.assertEqual(sync.run(args),1)
-            first_name=self.record['jobName']
             with redirect_stdout(out):self.assertEqual(sync.run(args),1)
             self.assertEqual(sum('create-export-task' in c.args[0] for c in self.client.call.call_args_list),1)
             args.restart_export=[str(self.day)]
             with redirect_stdout(out):self.assertEqual(sync.run(args),1)
-            self.assertNotEqual(self.record['jobName'],first_name)
             self.assertEqual(sum('create-export-task' in c.args[0] for c in self.client.call.call_args_list),2)
             journal=sync.Journal(self.root/'sync')
             try:
-                self.assertEqual(journal.previous(self.day)['supersedes']['jobName'],first_name)
+                self.assertEqual(journal.previous(self.day)['supersedes']['expectedBillCount'],100)
                 self.assertEqual(journal.con.execute('SELECT count(*) FROM days').fetchone()[0],3)
+                self.assertIsNone(journal.previous(self.day+dt.timedelta(days=1)))
             finally:journal.close()
-        self.assertIn('多条同名',out.getvalue());self.assertIn('jobName=',out.getvalue());cost.upload.assert_not_called()
+        self.assertIn('多条任务满足',out.getvalue());self.assertIn('T0=',out.getvalue());self.assertIn('本日未创建导出',out.getvalue());cost.upload.assert_not_called()
         last=json.loads((self.root/'sync/sync_latest.json').read_text());self.assertEqual(last['status'],'failed')
-        self.assertIn('多条同名',last['summary']);self.assertNotIn('synthetic-key',out.getvalue())
+        self.assertNotIn('synthetic-key',out.getvalue())
 
 if __name__=='__main__':unittest.main()

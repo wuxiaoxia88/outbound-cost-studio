@@ -182,80 +182,116 @@ def inspect_file(path, day, expected=EXPECTED):
     except MemoryError: return read(streaming_rows(path))
 
 
+EXPORT_PREFIX = '出港账单(包补收)-业务账单_网点业务账单运单明细_'
+ASSOCIATION_VERSION = 'time-count-v1'
+
+
+def count_value(value):
+    try:
+        if isinstance(value,bool): raise ValueError
+        n=Decimal(str(value))
+        if not n.is_finite() or n<0 or n!=n.to_integral_value(): raise ValueError
+        return int(n)
+    except (ValueError,InvalidOperation):
+        raise SyncError('账单汇总票数无效') from None
+
+
+def bill_summary(client,day):
+    check=client.call('/api/data/outbound-bill/query',{**window(day),'pageSize':10})['data']
+    n=count_value(check['billCount'])
+    try: fee=Decimal(str(check['totalFee']))
+    except InvalidOperation: raise SyncError('账单汇总金额无效') from None
+    if not fee.is_finite(): raise SyncError('账单汇总金额无效')
+    return n,fee
+
+
+def association_hint(record):
+    return f"T0={record['createStarted']}；billCount={record['expectedBillCount']}；runId={record.get('exportRunId','')}"
+
+
 def matching_export(client, record):
-    """读完本次创建时间范围内的所有分页，再确定唯一任务，不使用最新任务。"""
-    started = dt.datetime.fromisoformat(record['createStarted'])
-    query = {'startCreateTime': (started-dt.timedelta(minutes=1)).strftime('%Y-%m-%d %H:%M:%S'),
-             'endCreateTime': dt.datetime.now(SHANGHAI).strftime('%Y-%m-%d %H:%M:%S')}
-    matches = []; seen = set(); expected_total = None; read = 0
-    for page in range(1, 101):
-        result = client.call('/api/data/outbound-bill-export/fetchTaskApi', {
-            'pageDTO': {'pageNum':page,'pageSize':100,'sortField':'createTime','sortType':'DESC','needTotalCount':True},
+    """完整分页按默认名称、固定创建时间窗和精确行数选唯一任务。"""
+    started=dt.datetime.fromisoformat(record['createStarted'])
+    lower=started-dt.timedelta(seconds=5);upper=started+dt.timedelta(seconds=120)
+    query={'startCreateTime':lower.strftime('%Y-%m-%d %H:%M:%S'),
+           'endCreateTime':(upper+dt.timedelta(seconds=1)).strftime('%Y-%m-%d %H:%M:%S')}
+    matches=[];seen=set();expected_total=None;read=0
+    for page in range(1,101):
+        result=client.call('/api/data/outbound-bill-export/fetchTaskApi',{
+            'pageDTO':{'pageNum':page,'pageSize':100,'sortField':'createTime','sortType':'DESC','needTotalCount':True},
             'fetchTaskDTO':query})
         try:
-            data = result['data']; rows = data['data']; total = data['total']
-            if not isinstance(rows,list) or type(total) is not int or total<0: raise ValueError
-            if expected_total is not None and total != expected_total: raise ValueError
-            expected_total = total
+            data=result['data'];rows=data['data'];total=data['total']
+            if not isinstance(rows,list) or type(total) is not int or total<0:raise ValueError
+            if expected_total is not None and total!=expected_total:raise ValueError
+            expected_total=total
             for task in rows:
-                task_id = task.get('id') or task.get('taskId')
-                if not isinstance(task_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task_id): raise ValueError
-                if task_id in seen: raise ValueError
+                task_id=task.get('id') or task.get('taskId')
+                if not isinstance(task_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task_id):raise ValueError
+                if task_id in seen:raise ValueError
                 seen.add(task_id)
-                # 平台不回显 jobName；唯一 fileName 必须位于任务名起始且紧跟下划线。
                 name=task.get('taskName')
-                if isinstance(name,str) and name.startswith(record['fileName']+'_'):
+                if not isinstance(name,str) or not name.startswith(EXPORT_PREFIX):continue
+                # total=null 表示尚未给出行数；不据 processedCount 或其他近似值匹配。
+                try:
+                    created=dt.datetime.fromisoformat(task['createTime'])
+                    if created.tzinfo is None:created=created.replace(tzinfo=SHANGHAI)
+                    n=count_value(task.get('total'))
+                except (KeyError,TypeError,ValueError,SyncError):continue
+                if lower<=created<=upper and n==record['expectedBillCount']:
                     matches.append({**task,'id':task_id})
-            read += len(rows)
-            if read > total or (not rows and read < total): raise ValueError
+            read+=len(rows)
+            if read>total or (not rows and read<total):raise ValueError
         except (KeyError,TypeError,AttributeError,ValueError):
-            raise UncertainExport(f"导出任务列表不完整或已变化，未关联任务；jobName={record['jobName']}") from None
+            raise UncertainExport('导出任务列表不完整或已变化，未关联；'+association_hint(record)) from None
         if len(matches)>1:
-            raise UncertainExport(f"发现多条同名导出任务，未下载；jobName={record['jobName']}")
-        if read == total: return matches[0] if matches else None
-    raise UncertainExport(f"导出任务分页超过安全上限，未关联任务；jobName={record['jobName']}")
+            raise UncertainExport('多条任务满足创建时刻和行数，未下载；'+association_hint(record))
+        if read==total:return matches[0] if matches else None
+    raise UncertainExport('导出任务分页超过安全上限，未关联；'+association_hint(record))
 
 
 def export_file(client, day, record, save, run_id, sleep=None, download_root=None):
-    sleep = sleep or time.sleep
-    if not record.get('jobName'):
-        # 创建前持久化名字和时间；中断后只按原名字接续，不重新创建任务。
-        name=f'出港账单(包补收)-业务账单-成本同步-{day}-{run_id[:8]}'
-        record.update(jobName=name,fileName=name,
-                      exportRunId=run_id,createStarted=now(),status='exporting')
+    sleep=sleep or time.sleep
+    if not record.get('createStarted'):
+        n,fee=bill_summary(client,day)
+        # 先查询 N，再将创建时刻 T0 持久化；创建请求只发送一次。
+        record.update(associationVersion=ASSOCIATION_VERSION,expectedBillCount=n,
+                      billCountBefore=n,billTotalFeeBefore=str(fee),exportRunId=run_id,
+                      createStarted=now(),status='exporting')
         save(record)
         try:
-            client.call('/api/workflows/outbound-bill-export/create-export-task',
-                        {**window(day),'jobName':record['jobName'],'fileName':record['fileName']},timeout=120)
+            client.call('/api/workflows/outbound-bill-export/create-export-task',window(day),timeout=120)
         except SyncError:
-            raise UncertainExport(f"创建响应未确认，未重建任务；jobName={record['jobName']}；重跑将按原名查询") from None
-    if not record.get('fileName'):
-        raise UncertainExport('旧任务没有唯一 fileName，不能自动关联；请核对原任务后人工接续或指定 --restart-export 日期')
-    # 列表存在短暂延迟，最多等 60 秒出现；已找到的任务最多等 15 分钟完成。
+            raise UncertainExport('创建响应未确认，未重建；'+association_hint(record)+'；重跑将按原时间窗和行数查询') from None
+    if record.get('associationVersion')!=ASSOCIATION_VERSION or 'expectedBillCount' not in record:
+        raise UncertainExport('旧任务缺少创建前票数或关联口径，请人工核对后接续或指定 --restart-export 日期')
+    started=dt.datetime.fromisoformat(record['createStarted'])
     for poll in range(181):
-        task = matching_export(client,record)
+        task=matching_export(client,record)
+        elapsed=(dt.datetime.fromisoformat(now())-started).total_seconds()
         if task is None:
-            if poll>=12 or record.get('taskId'):
-                raise UncertainExport(f"找不到完整同名任务，未下载；jobName={record['jobName']}")
+            if elapsed>=300 or poll>=60:
+                raise UncertainExport('5分钟内未找到满足创建时刻和行数的任务，未下载；'+association_hint(record))
         else:
-            if record.get('taskId') and record['taskId'] != task['id']:
-                raise UncertainExport(f"同名任务标识已变化，未下载；jobName={record['jobName']}")
-            record.update(taskId=task['id'],matchedFileName=record['fileName'],matchedTaskName=task['taskName'],
-                          taskCreated=task.get('createTime'),taskStatus=task.get('status'))
+            if record.get('taskId') and record['taskId']!=task['id']:
+                raise UncertainExport('候选任务标识已变化，未下载；'+association_hint(record))
+            record.update(taskId=task['id'],matchedTaskName=task['taskName'],
+                          taskCreated=task['createTime'],taskStatus=task.get('status'),taskTotal=task['total'])
             save(record)
-            status = task.get('status')
+            status=task.get('status')
             if status in (4,'FAIL'):
-                raise UncertainExport(f"原导出任务失败，未重建；taskId={task['id']}；jobName={record['jobName']}")
-            # 该接口实测 2 为执行中、3 为成功；未知状态只等待，不能推断成功。
-            if status in (3,'SUCCESS'):
-                root = Path(download_root or Path.home()/'zto-exports').expanduser().resolve()
-                source = root/f"sync-{task['id']}.xlsx"
+                raise UncertainExport(f"原导出任务失败，未重建；taskId={task['id']}；"+association_hint(record))
+            # 该接口实测 2 为执行中，3 为成功；只在成功后下载。
+            if status==3:
+                root=Path(download_root or Path.home()/'zto-exports').expanduser().resolve()
+                source=root/f"sync-{task['id']}.xlsx"
                 record.update(source=str(source),status='exported');save(record)
-                try: download_task_file(client,task['id'],source)
-                except SyncError: source=recover_download(client,task['id'],source,record,save,root,sleep)
+                try:download_task_file(client,task['id'],source)
+                except SyncError:source=recover_download(client,task['id'],source,record,save,root,sleep)
                 return source,task['id']
-        if poll<180: sleep(5)
-    raise UncertainExport(f"原导出任务等待超时，未重建；jobName={record['jobName']}")
+        if elapsed>=900:break
+        if poll<180:sleep(5)
+    raise UncertainExport('原导出任务等待超时，未重建；'+association_hint(record))
 
 
 def download_task_file(client, task, target):
@@ -338,9 +374,9 @@ def process_day(day, record, save, zto, cost, group, raw_root, resume=None, down
     elif record.get('source') and record.get('status') in ('exported','validated','importing','import_failed','uncertain'):
         source, task = Path(record['source']), record['taskId']
     else:
-        if record.get('status') in ('exporting','uncertain') and not record.get('jobName'):
+        if record.get('status') in ('exporting','uncertain') and not record.get('createStarted'):
             raise UncertainExport('上次导出结果未确认，请查原平台任务后用 --resume 接续')
-        if not record.get('jobName'):
+        if not record.get('createStarted'):
             supersedes=record.get('supersedes');record.clear()
             if supersedes:record['supersedes']=supersedes
         record['status']='exporting'; save(record)
@@ -352,14 +388,10 @@ def process_day(day, record, save, zto, cost, group, raw_root, resume=None, down
     except SyncError: source = recover_download(zto, task, source, record, save, download_root, sleep)
     archive(source,target)
     record.update(inspect_file(target,day)); save(record)
-    check = zto.call('/api/data/outbound-bill/query', {**window(day),'pageSize':10})['data']
-    count_value=Decimal(str(check['billCount']))
-    if not count_value.is_finite() or count_value<0 or count_value!=count_value.to_integral_value(): raise SyncError('账单汇总票数无效')
-    bill_count = int(count_value); bill_fee = Decimal(str(check['totalFee']))
-    if not bill_fee.is_finite(): raise SyncError('账单汇总金额无效')
+    bill_count,bill_fee=bill_summary(zto,day)
     record.update(billCount=bill_count,billTotalFee=str(bill_fee),feeGap=str(Decimal(record['fileTotalFee'])-bill_fee))
     save(record)
-    if record['rows'] != record['unique'] or record['rows'] != bill_count or record['emptyWaybills'] or record['outsideWindow']:
+    if record['rows'] != record['unique'] or record['rows'] != bill_count or record['rows'] != record.get('expectedBillCount',record['rows']) or record['emptyWaybills'] or record['outsideWindow']:
         raise SyncError('行数、唯一运单数、账单票数或业务日窗口不一致，未导入')
     record['status']='validated'; save(record)
     jid = cost.upload(target,group); record.update(jobId=jid,status='importing'); save(record)
@@ -406,12 +438,17 @@ def run(args):
                 try:
                     if day in restarts and record:
                         if record.get('status')=='importing':raise SyncError('原导入仍待核对，不能重新创建导出任务')
-                        record={'supersedes':{k:record[k] for k in ('exportRunId','jobName','fileName','taskId','status') if k in record}}
+                        record={'supersedes':{k:record[k] for k in ('exportRunId','jobName','fileName','createStarted','expectedBillCount','associationVersion','taskId','status') if k in record}}
                     process_day(day,record,lambda r:journal.save(rid,day,r),zto,cost,group,raw_root,resumes.get(day),args.export_root,run_id=rid)
                 except Exception as ex:
                     failed=True
                     record.update(status='uncertain' if isinstance(ex,UncertainExport) else 'import_failed' if record.get('status') in ('importing','validated') else 'failed', error=str(ex) if isinstance(ex,SyncError) else '处理异常，请核对服务状态和原始文件')
                 record.update(day=str(day),elapsed=round(time.monotonic()-t,2)); journal.save(rid,day,record); records.append(record)
+                if record['status']!='done':
+                    # 上一天没有完整结束，不创建下一天的任务；不覆盖后续日期原有接续记录。
+                    for rest in range(offset+1,(end-start).days+1):
+                        records.append({'day':str(start+dt.timedelta(days=rest)),'status':'skipped','error':'上一日未完成，本日未创建导出'})
+                    break
             cost.call('/api/v2/batches/finish',{'id':group,'partial':failed})
         except Exception:
             failed=True

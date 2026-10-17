@@ -138,8 +138,8 @@ class SyncTests(unittest.TestCase):
         zto=Mock();saved=[];links=[]
         def api(path,body,timeout=60):
             if 'create-export-task' in path:
-                api.name=body['jobName'];return {'data':{'results':{'createJob':True}}}
-            if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':'test-task','taskName':api.name+'_file.xlsx','status':3}]}}
+                api.name='default';return {'data':{'results':{'createJob':True}}}
+            if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':'test-task','taskName':sync.EXPORT_PREFIX+'test.xlsx','createTime':sync.now(),'total':1,'status':3}]}}
             if 'fetch-download-link' in path:
                 self.assertEqual(body,{'taskId':'test-task'});links.append(len(links)+1)
                 return {'data':{'results':{'fetchLinkApi':f'https://file-storage.gw.zt-express.com/download?signature=secret{len(links)}'}}}
@@ -212,8 +212,9 @@ class SyncTests(unittest.TestCase):
         zto=Mock()
         def upstream(path,body,**kwargs):
             if 'create-export-task' in path:
-                upstream.name=body['jobName'];return {}
-            return {'data':{'total':1,'data':[{'id':'test-task','taskName':upstream.name+'_file.xlsx','status':3}]}}
+                return {}
+            if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':'test-task','taskName':sync.EXPORT_PREFIX+'test.xlsx','createTime':sync.now(),'total':1,'status':3}]}}
+            return {'data':{'billCount':1,'totalFee':2}}
         zto.call.side_effect=upstream
         cost=Mock();cost.headers={}
         def cost_call(path,*args,**kwargs):
@@ -226,7 +227,7 @@ class SyncTests(unittest.TestCase):
                 self.assertIn('结果未确认',output.getvalue());self.assertIn('taskId=test-task',output.getvalue())
                 self.assertNotIn('synthetic-key',output.getvalue())
             self.assertEqual(download.call_count,6);self.assertEqual(sleep.call_count,5)
-        self.assertEqual(zto.call.call_count,2);cost.upload.assert_not_called()
+        self.assertEqual(zto.call.call_count,3);cost.upload.assert_not_called()
         journal=sync.Journal(self.root/'sync')
         try:self.assertEqual(journal.previous(day)['status'],'uncertain')
         finally:journal.close()
@@ -239,6 +240,16 @@ class SyncTests(unittest.TestCase):
         f=self.file([row('test-3',2,hand='2026-10-16 12:00:00')],name='bad.xlsx');self.assertEqual(sync.inspect_file(f,self.day)['outsideWindow'],1)
         missing=self.file([['test-4']],['运单号'],'missing.xlsx')
         with self.assertRaises(sync.SyncError):sync.inspect_file(missing,self.day)
+
+    def test_precreate_count_drift_is_rejected_even_if_file_matches_latest_summary(self):
+        from unittest.mock import Mock
+        source=self.file([row('test-1',2,hand='2026-10-15 12:00:00'),row('test-2',3,hand='2026-10-15 13:00:00')])
+        zto=Mock();zto.call.return_value={'data':{'billCount':2,'totalFee':5}};cost=Mock()
+        record={'expectedBillCount':1,'taskTotal':1}
+        with self.assertRaisesRegex(sync.SyncError,'行数、唯一运单数、账单票数'):
+            sync.process_day(self.day,record,lambda r:None,zto,cost,'g',self.root/'archive',('test-task',str(source)),self.root)
+        self.assertEqual(record['rows'],2);self.assertEqual(record['billCount'],2)
+        cost.upload.assert_not_called()
     def test_archive_move_idempotent_and_conflict(self):
         src=self.root/'source.xlsx';src.write_bytes(b'first');dest=self.root/'target.xlsx'
         sync.archive(src,dest);self.assertFalse(src.exists());self.assertEqual(dest.read_bytes(),b'first')
@@ -261,8 +272,8 @@ class SyncTests(unittest.TestCase):
             def __init__(self,outer):self.outer=outer;self.calls=0;self.fee=2;self.count=1
             def call(self,path,body,timeout=60):
                 if 'create-export-task' in path:
-                    self.calls+=1;self.name=body['jobName'];return {}
-                if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':f'task{self.calls}','taskName':self.name+'_file.xlsx','status':3}]}}
+                    self.calls+=1;self.created=sync.now();return {}
+                if 'fetchTaskApi' in path:return {'data':{'total':1,'data':[{'id':f'task{self.calls}','taskName':sync.EXPORT_PREFIX+'test.xlsx','createTime':self.created,'total':self.count,'status':3}]}}
                 return {'data':{'billCount':self.count,'totalFee':str(self.fee+Decimal('.01'))}}
         zto=Zto(self)
         def download(client,task,target):target.write_bytes(workbook(H,[row('test-1',client.fee,hand='2026-10-16 01:00:00')]))
@@ -312,7 +323,7 @@ class SyncTests(unittest.TestCase):
                 self.server.requests.append(payload)
                 assert self.headers.get('X-API-Key')=='synthetic-key'
                 if 'create-export-task' in self.path:
-                    self.server.task={'id':'task-'+str(len(self.server.requests)),'taskName':payload['fileName']+'_file.xlsx','status':3}
+                    self.server.task={'id':'task-'+str(len(self.server.requests)),'taskName':sync.EXPORT_PREFIX+'test.xlsx','createTime':sync.now(),'total':2 if self.mismatch else 1,'status':3}
                     self.server.hand=payload['startTime'];data={'results':{'createJob':True}}
                 elif 'fetchTaskApi' in self.path:data={'total':1,'data':[self.server.task]}
                 else:data={'billCount':2 if self.mismatch else 1,'totalFee':2}
