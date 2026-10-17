@@ -3,7 +3,7 @@ from calendar import monthrange
 from collections import OrderedDict, defaultdict
 from datetime import date, timedelta
 from threading import RLock
-from . import rules
+from . import rules, regions
 
 MIN_PREV = 300
 _LOCK = RLock()
@@ -91,7 +91,7 @@ def attach(wh,cur,version,req,ctx,result,names,all_view):
     anchor=pr['end'][:7]; steps=ctx['steps']; mask=rules.exclude_mask(scope['excludeRules'])
     # Cache period aggregates independent of customer selection or simulation.
     def read(sc):
-        key=(version,sc.get('dateBasis'),sc['start'],sc['end'],mask,tuple(s['step'] for s in steps))
+        key=(version,sc.get('dateBasis'),sc['start'],sc['end'],mask,tuple(sc.get('excludeProvinces') or []),tuple(s['step'] for s in steps))
         with _LOCK:
             cache=getattr(wh,'_history_cache',None)
             if cache is None:wh._history_cache=cache=OrderedDict()
@@ -103,6 +103,8 @@ def attach(wh,cur,version,req,ctx,result,names,all_view):
     # Always anchored to the selected end month; no future months in a September view.
     month_where = "state=1 AND (flags & %d)=0 AND send_day IS NOT NULL AND strftime(send_day,'%%Y-%%m')<=?" % mask
     month_args = [anchor]
+    zw,za=regions.predicate(scope)
+    if zw:month_where += ' AND '+' AND '.join(zw);month_args += za
     if not all_view:
         month_where += " AND coalesce(customer,'') IN ("+','.join('?' for _ in names)+')' if names else ' AND FALSE'
         month_args += names

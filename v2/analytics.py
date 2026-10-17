@@ -29,6 +29,8 @@ def settings(wh, req, cur=None):
     f.setdefault('dateBasis', cfg.get('dateBasis', 'send'))
     if 'excludeRules' not in f:
         f['excludeRules'] = cfg.get('excludeRules', rules.DEFAULT_EXCLUDE)
+    from .regions import scope
+    f.update(scope(cfg['regionGroups'],req.get('excludeZones',f.get('excludeZones'))))
     cost = dict(req.get('cost') or {})
     flows = dict(req.get('flows') or {})
     if 'groups' not in flows:

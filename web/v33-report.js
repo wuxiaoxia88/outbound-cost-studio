@@ -1,0 +1,63 @@
+'use strict';
+// Capture once. Printing, pagination and Excel all use this exact response.
+const exportState={open:false,capture:null,mods:[],rows:'top',excel:false};
+function reportItems(r){return [['overview','概览指标','票数、日均、均重、成本与网点参考'],['insights','要点','当前重量和成本的主要发现'],['zones','区域分布','五区票量、成本与参与测算范围'],['history','历史对比','按月发件量、均重、单票及重量变化'],['dist','重量分布与成本','0.1kg 分布柱图与单票成本曲线'],['heat','流向 × 重量段成本','核心成本矩阵，宽表用横向页面'],['aftersales','退改附加成本','拦截、退件、退改及摊到每票'],r.mode==='multi'?['compare','客户对比','各客户主要指标与差异拆解']:null,r.mode==='all'?['ranking','客户排行','全部客户清单']:null].filter(Boolean)}
+function reportScope(r){return r.scope.excludeZones.length?'已排除 '+r.scope.excludeZones.join('、'):'全部流向'}
+function reportName(r){return r.mode==='all'?'全部客户':r.customers.join('、')}
+function reportDate(r){return `${r.scope.dateBasis==='handover'?'交件业务日':'寄件'} ${r.scope.start||'不限'} 至 ${r.scope.end||'不限'}`}
+function exportPanel(){const r=exportState.capture.r;return `<aside class="drawer exp" role="dialog" aria-modal="true" aria-label="导出分析报告"><button class="xbtn" data-export="close" aria-label="关闭导出">×</button><div><div class="eyebrow">导出</div><h3>分析报告 · A4</h3><p class="hint">${esc(reportName(r))} · ${esc(reportDate(r))} · ${esc(reportScope(r))}</p></div><fieldset class="expf"><legend>包含的内容 <span class="hint">· 已选 ${exportState.mods.length} 项</span></legend>${reportItems(r).map(([k,l,d])=>`<label class="expi"><input type="checkbox" data-expmod="${k}" ${exportState.mods.includes(k)?'checked':''}><span><b>${l}</b><span class="hint">${d}</span></span></label>`).join('')}</fieldset><fieldset class="expf"><legend>流向表范围</legend><div class="seg"><button data-exprows="top" aria-pressed="${exportState.rows==='top'}">前 12 个流向，其余合并</button><button data-exprows="all" aria-pressed="${exportState.rows==='all'}">全部流向</button></div></fieldset><label class="expi"><input type="checkbox" data-expexcel ${exportState.excel?'checked':''}><span><b>同时下载 Excel 数据</b><span class="hint">每个模块一张工作表，数值格式、冻结表头</span></span></label><p class="hint">内部分析，包含客户名称和成本。此报告与客户报价表用途不同。</p><div class="exp-act"><button class="btn" data-export="close">取消</button><button class="btn primary" data-export="make" ${exportState.mods.length?'':'disabled'}>生成报告</button></div></aside>`}
+function drawExport(){document.querySelector('#drawer').hidden=false;document.querySelector('#drawer').innerHTML=exportPanel()}
+function reportSections(){const {r,view}=exportState.capture,old={};for(const k of Object.keys(view)){old[k]=st[k];st[k]=view[k]}
+ const prior=st.result,rendering=st.rendering,dec=st.dec;st.result=r;st.rendering=true;st.dec=null;
+ try{const h=r.heat,rr={...r,heat:{...h,rows:exportState.rows==='all'||r.level==='zone'?h.allRows:h.allRows.slice(0,12),rest:exportState.rows==='all'||r.level==='zone'?null:h.topRest}};
+  const builders={overview:()=>kpis(r),insights:()=>insights(r),zones:()=>zonePanel(r),history:()=>historyPanel(r),dist:()=>chartPanel(r),heat:()=>heatPanel(rr),aftersales:()=>afterSalesPanel(r),compare:()=>comparePage(r),ranking:()=>{const all=st.rankAll;st.rankAll=true;try{return ranking(r)}finally{st.rankAll=all}}};let no=0;const out=[];
+  for(const [k,title] of reportItems(r)){if(!exportState.mods.includes(k))continue;no++;const box=document.createElement('div');box.innerHTML=builders[k]();
+   // Preserve table labels, replace controls with their displayed text.
+   box.querySelectorAll('.ztoggle,.sort').forEach(b=>b.replaceWith(document.createTextNode(b.textContent)));
+   box.querySelectorAll('.zchip').forEach(b=>b.replaceWith(document.createTextNode(b.getAttribute('aria-pressed')==='true'?'参与':'已排除')));
+   box.querySelectorAll('select').forEach(s=>s.replaceWith(document.createTextNode(s.selectedOptions[0]?.textContent||'')));
+   box.querySelectorAll('button,.seg,input,.tip,.more').forEach(n=>n.remove());box.querySelectorAll('[tabindex]').forEach(n=>n.removeAttribute('tabindex'));
+   box.querySelectorAll('[data-flow],[data-solo]').forEach(n=>{n.removeAttribute('data-flow');n.removeAttribute('data-solo')});
+   const parts=k==='compare'?[...box.children].flatMap(n=>n.matches('.cmp-grid')?[...n.children]:[n]):[box];
+   parts.forEach((part,i)=>{const label=part.querySelector('h2')?.textContent||title;part.querySelectorAll('h2').forEach(n=>n.remove());part.querySelectorAll('.panel').forEach(n=>n.classList.remove('panel'));part.classList.remove('panel');
+    const section=document.createElement('section');section.className='rs';section.dataset.module=k;section.innerHTML=`<h3><span class="num">${no}</span>${esc(k==='compare'?label:title)}${i?' <span class="rsub">（续）</span>':''}</h3>`+part.innerHTML;
+    out.push({node:section,land:k==='heat'||k==='ranking'||(k==='compare'&&i===0)});
+   });
+  }return out;
+ }finally{for(const k of Object.keys(view))st[k]=old[k];st.result=prior;st.rendering=rendering;st.dec=dec}
+}
+function reportCover(r){const c=document.createElement('div');c.className='rcover';c.innerHTML=`<div class="eyebrow">出港成本分析报告 · 内部分析</div><h1>${esc(reportName(r))}</h1><dl class="rmeta"><div><dt>统计期间</dt><dd>${esc(reportDate(r))}</dd></div><div><dt>流向范围</dt><dd>${esc(reportScope(r))}</dd></div><div><dt>成本口径</dt><dd>正常件 · ${r.simulation.count?`账单费用 ± ${r.simulation.count} 项成本模拟`:'账单费用，未开模拟'}；退改另列</dd></div><div><dt>数据版本</dt><dd>${r.version} · ${esc(r.generatedAt)}</dd></div></dl><p class="rsub">金额单位：元/票或元；税口径未确认。历史对比按寄件月份；区域分布保留排除前数据供对照，其余按剩余流向计算。</p>`;return c}
+function newReportSheet(land,r){const sh=document.createElement('article');sh.className='sheet'+(land?' land':'');sh.innerHTML=`<header class="rh"><span><b>出港成本分析</b> · ${esc(reportName(r))}</span><span>${esc(reportDate(r))}</span></header><div class="rbody"></div><footer class="rf"><span>内部分析 · ${esc(reportScope(r))} · ${r.simulation.count?'含模拟':'账单费用'}</span><span class="num"></span></footer>`;return sh}
+function reportOverflows(sheet){const b=sheet.querySelector('.rbody'),last=b.lastElementChild;return !!last&&(last.getBoundingClientRect().bottom>b.getBoundingClientRect().bottom+1||b.scrollWidth>b.clientWidth+2)}
+function paginateReport(parts,r){const box=document.querySelector('#report .sheets');let page=newReportSheet(false,r);box.append(page);page.querySelector('.rbody').append(reportCover(r));let count=1;
+ const fresh=land=>{if(++count>300)throw Error('报告超过 300 页，请缩小分析范围');page=newReportSheet(land,r);box.append(page);return page.querySelector('.rbody')};
+ for(const part of parts){let body=page.querySelector('.rbody');if(page.classList.contains('land')!==part.land)body=fresh(part.land);body.append(part.node);
+  if(!reportOverflows(page))continue;
+  if(body.children.length>1){part.node.remove();body=fresh(part.land);body.append(part.node)}
+  if(!reportOverflows(page))continue;
+  // Split a tall table in source order; each continuation keeps its thead.
+  const original=part.node,table=original.querySelector('table'),tbody=table?.querySelector('tbody');
+  if(!tbody||tbody.children.length<2)throw Error('报告模块超出 A4 页面，请缩小范围后重试');
+  const rows=[...tbody.children],template=original.cloneNode(true);template.querySelector('tbody').replaceChildren();original.remove();let section=null,target=null;
+  for(const row of rows){if(!section){section=template.cloneNode(true);if(body.children.length)body=fresh(part.land);if(row!==rows[0])section.querySelector('h3').insertAdjacentHTML('beforeend',' <span class="rsub">（续）</span>');body.append(section);target=section.querySelector('tbody')}
+   target.append(row);if(reportOverflows(page)){row.remove();if(!target.children.length)throw Error('报告列太多或单行过高，请使用区域/省级视图或减少重量段');body=fresh(part.land);section=template.cloneNode(true);section.querySelector('h3').insertAdjacentHTML('beforeend',' <span class="rsub">（续）</span>');body.append(section);target=section.querySelector('tbody');target.append(row);if(reportOverflows(page))throw Error('报告单行超出 A4 页面')}
+  }
+ }
+ const pages=[...box.children];pages.forEach((p,i)=>p.querySelector('.rf .num').textContent=`第 ${i+1} 页 / 共 ${pages.length} 页`);document.querySelector('#report .rtool .hint').textContent=`A4 · ${pages.length} 页 · 宽表横向 · 打印选择 A4、边距“无”、背景图形`;
+}
+function makeReport(){const r=exportState.capture.r;hideTip();exportState.open=false;document.querySelector('#drawer').hidden=true;const rp=document.querySelector('#report');rp.hidden=false;rp.innerHTML=`<div class="rtool"><button class="btn" data-report="back">← 返回分析</button><span class="hint">正在分页…</span><span style="margin-left:auto;display:flex;gap:8px"><button class="btn" data-report="excel">下载 Excel 数据</button><button class="btn primary" data-report="print">打印 / 存为 PDF</button></span></div><div class="sheets"></div>`;document.body.classList.add('printing');document.querySelector('#app').inert=true;document.querySelector('.top').inert=true;
+ try{paginateReport(reportSections(),r);rp.scrollTop=0;rp.querySelector('[data-report="back"]').focus();if(exportState.excel)downloadAnalysisExcel()}catch(e){rp.querySelector('.sheets').innerHTML=`<section class="panel" role="alert">${esc(e.message)}。可返回调整，或下载 Excel 数据。</section>`;rp.querySelector('[data-report="print"]').disabled=true;toast(e.message)}
+}
+async function downloadAnalysisExcel(){const r=exportState.capture.r;try{const response=await fetch('/api/v2/analysis/export',{method:'POST',headers:{'Content-Type':'application/json','X-App-Token':st.token},body:JSON.stringify({snapshotId:r.snapshotId,modules:exportState.mods,flowRows:exportState.rows})});if(!response.ok){const err=await response.json();throw Error(err.error||'导出失败')}const url=URL.createObjectURL(await response.blob()),a=document.createElement('a');a.href=url;a.download=`内部分析_${r.scope.start}_${r.scope.end}.xlsx`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}catch(e){toast(e.message)}}
+function closeReport(){document.querySelector('#report').hidden=true;document.querySelector('#report').replaceChildren();document.body.classList.remove('printing');document.querySelector('#app').inert=false;document.querySelector('.top').inert=false;document.querySelector('[data-export="open"]')?.focus()}
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;
+ if(b.dataset.export==='open'){if(st.pending||!st.result)return;closeDrawer(false);exportState.capture={r:JSON.parse(JSON.stringify(st.result)),view:{unit:st.unit,heatUnit:st.heatUnit,colorMode:st.colorMode,expandedZones:[...st.expandedZones],rankSort:st.rankSort,rankAsc:st.rankAsc}};exportState.mods=reportItems(st.result).map(x=>x[0]);exportState.open=true;drawExport();document.querySelector('[data-export="close"]').focus()}
+ if(b.dataset.export==='close'){exportState.open=false;document.querySelector('#drawer').hidden=true;document.querySelector('[data-export="open"]')?.focus()}
+ if(b.dataset.export==='make')makeReport();
+ if(b.dataset.exprows){exportState.rows=b.dataset.exprows;drawExport()}
+ if(b.dataset.report==='back')closeReport();if(b.dataset.report==='excel')downloadAnalysisExcel();if(b.dataset.report==='print')window.print();
+});
+document.addEventListener('change',e=>{const t=e.target;if(t.dataset.expmod){exportState.mods=t.checked?[...exportState.mods,t.dataset.expmod]:exportState.mods.filter(k=>k!==t.dataset.expmod);drawExport();document.querySelector(`[data-expmod="${t.dataset.expmod}"]`)?.focus()}if(t.hasAttribute('data-expexcel'))exportState.excel=t.checked});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!document.querySelector('#report').hidden){closeReport();e.stopImmediatePropagation()}});
+
+document.addEventListener('keydown',e=>{if(e.key!=='Tab')return;const root=!document.querySelector('#report').hidden?document.querySelector('#report'):exportState.open?document.querySelector('#drawer'):null;if(!root)return;const items=[...root.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),a[href]')].filter(x=>x.getClientRects().length);if(!items.length)return;const a=items[0],b=items[items.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();b.focus()}else if(!e.shiftKey&&document.activeElement===b){e.preventDefault();a.focus()}});

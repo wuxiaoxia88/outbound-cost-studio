@@ -425,7 +425,7 @@ def run(args):
         key = json.loads(Path(args.key_file).expanduser().read_text())['apiKey']
         zto = HTTP(args.zto_url,{'X-API-Key':key}); cost = HTTP(args.cost_url)
         health = cost.call('/api/health')
-        if not health.get('ok') or health.get('version') not in ('3.2.1','3.2.2'): raise SyncError('成本服务需为 3.2.1 或 3.2.2，请先核对版本')
+        if not health.get('ok') or health.get('version') not in ('3.2.1','3.2.2','3.3.0'): raise SyncError('成本服务需为 3.2.1、3.2.2 或 3.3.0，请先核对版本')
         cost.headers['X-App-Token']=cost.call('/api/bootstrap')['token']
         journal=Journal(home); rid=uuid.uuid4().hex; journal.start(rid)
         group=None; started=time.monotonic(); records=[]; failed=False

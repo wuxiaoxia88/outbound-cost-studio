@@ -178,6 +178,8 @@ class Warehouse:
     def config(self, c=None):
         cfg = dict(rules.DEFAULT_CONFIG)
         cfg.update(json.loads((c or self.cursor()).execute("SELECT value FROM meta WHERE key='config'").fetchone()[0]))
+        from .regions import validate
+        cfg['regionGroups'] = validate(cfg.get('regionGroups'))
         return cfg
 
     def validate_config(self, cfg):
@@ -192,6 +194,8 @@ class Warehouse:
         out['adjustments'] = rules.adjustments(out.get('adjustments'))
         from . import simulation
         out['simulation']=simulation.validate(out.get('simulation'))
+        from .regions import validate
+        out['regionGroups']=validate(out.get('regionGroups'))
         rules.date_col(out)
         if out.get('conflictRule') not in ('replace','review'):
             raise ValueError('冲突规则只能是最新导入优先或逐条核对')

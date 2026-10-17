@@ -355,19 +355,4 @@ class SyncTests(unittest.TestCase):
 
 if __name__=='__main__':unittest.main()
 
-@unittest.skipIf(os.name=='nt','launchd 仅在 Mac 运行')
-class DeploymentRollback(unittest.TestCase):
-    def test_failed_health_restores_link_database_and_wal(self):
-        from scripts import activate_release as deploy
-        with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp).resolve();base=root/'app';data=root/'data';(data/'v2').mkdir(parents=True)
-            old=base/'releases/v3.2.0';new=base/'releases/v3.2.1';old.mkdir(parents=True);new.mkdir()
-            (base/'current').symlink_to(old);db=data/'v2/warehouse.duckdb';db.write_bytes(b'old database');wal=data/'v2/warehouse.duckdb.wal';wal.write_bytes(b'old wal')
-            calls=[]
-            def cmd(*args):
-                calls.append([str(x) for x in args])
-                if 'bootstrap' in args and (base/'current').resolve()==new:db.write_bytes(b'migrated');wal.unlink(missing_ok=True)
-            with patch.object(deploy,'command',side_effect=cmd),patch.object(deploy,'wait_health',side_effect=RuntimeError('health failed')),patch.object(deploy.subprocess,'run'),patch.object(deploy,'wait_port_free'):
-                with self.assertRaises(RuntimeError):deploy.activate(base,data,new,root/'main.plist',root/'watch.plist')
-            self.assertEqual((base/'current').resolve(),old);self.assertEqual(db.read_bytes(),b'old database');self.assertEqual(wal.read_bytes(),b'old wal')
-            self.assertEqual(calls[-1][-1],str(root/'watch.plist'))
+# Release rollback and launchd races are covered by test_v33_deploy.py.

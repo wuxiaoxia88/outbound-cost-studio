@@ -13,7 +13,7 @@ import re
 import threading
 import time
 
-from . import rules, simulation, history
+from . import rules, simulation, history, regions
 
 FIELDS = ('n', 'w', 'fee', 'disp', 'tran', 'mf', 'system', 'subsidy', 'rebate', 'adj', 'subN')
 SIZE = len(FIELDS)
@@ -95,10 +95,12 @@ def settings(wh, req, cur):
     f = {k: req.get(k) for k in ('start', 'end')}
     f['dateBasis'] = req.get('dateBasis') or cfg.get('dateBasis', 'send')
     f['excludeRules'] = req.get('excludeRules', cfg.get('excludeRules', rules.DEFAULT_EXCLUDE))
+    region_config = cfg['regionGroups']
+    f.update(regions.scope(region_config,req.get('excludeZones')))
     rules.filter_sql(f)
     rules.exclude_mask(f['excludeRules'])
     cost = req.get('cost') or {}
-    return {'scope': f, 'parameters': parameters(req.get('analysis', cfg.get('analysis'))),
+    return {'scope': f, 'regionGroups':region_config, 'parameters': parameters(req.get('analysis', cfg.get('analysis'))),
             'policies': rules.policies(cost.get('subsidyPolicies', cfg['subsidyPolicies'])),
             'deductRebate': bool(cost.get('deductRebate', cfg.get('deductRebate'))),
             'adjustments': rules.adjustments(cost.get('adjustments', cfg.get('adjustments')))}
@@ -413,14 +415,17 @@ def selection(req, ctx):
 
 def level_of(req):
     level = req.get('level','province')
-    if level not in ('province','city'):
-        raise ValueError('流向只支持省或市')
+    if level not in ('province','city','zone'):
+        raise ValueError('流向只支持区域、省或市')
     return level
 
 
 def level_cubes(ctx,cur,level,names=None,all_view=False):
     if level=='province':
         return ctx['cubes'],ctx['net']
+    if level=='zone':
+        cfg=ctx['settings']['regionGroups']
+        return {n:regions.cube(cb,cfg) for n,cb in ctx['cubes'].items()},regions.cube(ctx['net'],cfg)
     with _CACHE_LOCK:
         data=ctx['data']
         if 'cityNet' not in data:
@@ -488,6 +493,17 @@ def heat(cb,net,bands,all_n,show_all=False,all_view=False):
             'total':aggregate(rows,'全部流向'),'bands':bands}
 
 
+def heat_remainder(rows,bands,n):
+    if not rows:return None
+    cells=[]
+    for i,b in enumerate(bands):
+        vs=[r['cells'][i] for r in rows];count=sum(v['n'] for v in vs)
+        sums={k:math.fsum(v.get(k,0) for v in vs) for k in FIELDS[1:]}
+        cells.append({'n':count,**sums,'avg':sums['fee']/count if count else None,'avgW':sums['w']/count if count else None,'share':count/n if n else 0})
+    count=sum(c['n'] for c in cells);fee=math.fsum(c['fee'] for c in cells)
+    return {'flow':'其余','members':[r['flow'] for r in rows],'cells':cells,'total':{'n':count,'fee':fee,'avg':fee/count if count else None,'avgW':math.fsum(c['w'] for c in cells)/count if count else None}}
+
+
 def _decompose(a,b,ctx):
     refs=ctx['refs']
     def scan(cb):
@@ -515,7 +531,7 @@ def decompose(wh,req):
         a,b=req.get('a'),req.get('b','network')
         if not isinstance(a,str) or a not in ctx['cubes'] or (b!='network' and b not in ctx['cubes']):
             raise ValueError('请选择当前范围内有数据的客户，B 也可为 network')
-        return {'version':version,'a':a,'b':b,**_decompose(ctx['cubes'][a],ctx['net'] if b=='network' else ctx['cubes'][b],ctx)}
+        return {'version':version,'scope':ctx['settings']['scope'],'a':a,'b':b,**_decompose(ctx['cubes'][a],ctx['net'] if b=='network' else ctx['cubes'][b],ctx)}
 
 
 def analysis(wh,req):
@@ -534,7 +550,7 @@ def analysis(wh,req):
             bands=smart_bands(d,ctx['settings']['parameters'],bool(req.get('expand')) and level=='province')
             cubes,net=level_cubes(ctx,cur,level,names,all_view)
             heat_cb=net if all_view else combine(cubes,names)
-            h=heat(heat_cb,net,bands,t[N],bool(req.get('showAll')),all_view)
+            h=heat(heat_cb,net,bands,t[N],True,all_view)
             ex=excluded(ctx,list(ctx['excluded']) if all_view else names)
             gap=rate(t,SYSTEM)-eq['system'] if t[N] and eq['system'] is not None and not all_view else None
             mode='all' if all_view else 'single' if len(names)==1 else 'multi'
@@ -576,12 +592,32 @@ def analysis(wh,req):
         result=simulation.apply(result,ctx,cb,net if all_view else combine(cubes,names),simulation.state(wh,req,cur))
         result['customerIndex']=[{'name':s['name'],'normalN':s['total']['n'],'cluster':s['key']} for s in ctx['stats'].values()]
         history.attach(wh,cur,version,req,ctx,result,names,all_view)
-        return {**result,'elapsedMs':round((time.perf_counter()-t0)*1000,2)}
+        full=context(wh,{**req,'excludeZones':[]},cur,version) if ctx['settings']['scope']['excludeZones'] else ctx
+        cfg=ctx['settings']['regionGroups'];off=ctx['settings']['scope']['excludeZones']
+        result['zones']=regions.summary(full,names,all_view,cfg,off)
+        result['scope']={**result['scope'],'zoneExcluded':result['zones']['excluded']}
+        if level=='zone':
+            ordered={g['name']:i for i,g in enumerate(regions.groups(cfg))}
+            result['heat']['rows'].sort(key=lambda r:ordered[r['flow']])
+            ph=simulation.heat(heat(cb,ctx['net'],result['bands'],result['overview']['n'],True,all_view),cb,result['simulation']['items'],result['simulation']['constants'],(result['aftersales']['per'] or 0) if result['simulation']['items']['addon']['on'] else 0)
+            for row in result['heat']['rows']:
+                row['provinces']=[p for p in ph['rows'] if regions.zone_of(p['flow'],cfg)==row['flow']]
+        result['heat']['allRows']=result['heat']['rows']
+        result['heat']['topRest']=heat_remainder(result['heat']['allRows'][12:],result['bands'],result['overview']['n']) if level!='zone' else None
+        if level!='zone' and not req.get('showAll'):
+            result['heat']['rows']=result['heat']['allRows'][:12]
+            # Aggregate displayed remainder from the exact simulated cell sums.
+            result['heat']['rest']=heat_remainder(result['heat']['allRows'][12:],result['bands'],result['overview']['n'])
+        from . import reports
+        result={**result,'elapsedMs':round((time.perf_counter()-t0)*1000,2)}
+        return reports.remember(wh,result)
+
 
 
 def cell(wh,req):
     with wh.snapshot() as (cur,version):
         ctx=context(wh,req,cur,version);names,all_view=selection(req,ctx);level=level_of(req)
+        if level=='zone':raise ValueError('请展开区域后选择省份明细')
         band=req.get('band') or {};lo=rules.finite(band.get('lo',0),'重量下限')
         hi=rules.finite(band['hi'],'重量上限') if band.get('hi') is not None else None
         if lo<0 or lo>=6 or (hi is not None and (hi<=lo or hi>=6)) or abs(lo*20-round(lo*20))>1e-8 or (hi is not None and abs(hi*20-round(hi*20))>1e-8):
@@ -632,7 +668,7 @@ def cell(wh,req):
         for city in cities:
             city.update(simulation.adjusted(city,simulation.total_effect({city['flow']:cc[city['flow']]},sm,K,addon,us)))
         return {'simulationLines':[{'key':k,'name':simulation.LABELS[k],'total':eff[k],'per':eff[k]/agg[N] if agg[N] else None} for k in sm if sm[k]['on'] and k!='service'],
-                'version':version,'level':level,'flows':flows,'band':{'lo':lo,'hi':hi},'total':simulation.adjusted(public(agg),sum(eff.values())),'ref':ref,
+                'version':version,'scope':ctx['settings']['scope'],'level':level,'flows':flows,'band':{'lo':lo,'hi':hi},'total':simulation.adjusted(public(agg),sum(eff.values())),'ref':ref,
                 'gap':rate(agg,SYSTEM)-ref['system'] if agg[N] and ref['system'] is not None else None,
                 'cities':cities,'rows':out_rows,'page':page,'pageSize':limit,'totalRows':agg[N],
                 'quoteScope':{'customers':'all' if all_view else names,'flows':flows,'band':{'lo':lo,'hi':hi},**ctx['settings']['scope']}}

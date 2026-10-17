@@ -2,7 +2,7 @@
 import json
 import uuid
 from decimal import Decimal, ROUND_HALF_UP
-from . import analysis, rules, simulation
+from . import analysis, rules, simulation, regions
 from .analytics import VersionConflict
 from .store import now
 
@@ -19,6 +19,29 @@ def preview(wh, req):
         return _preview(wh, req, c, version)
 
 def _preview(wh, req, c, version):
+    cfg=wh.config(c)['regionGroups'];off=regions.scope(cfg,req.get('excludeZones'))['excludeZones']
+    if not off:
+        result=_base_preview(wh,req,c,version);result['remoteRows']=[]
+    else:
+        overrides=req.get('overrides') or {}
+        if not isinstance(overrides,dict):raise ValueError('人工改价格式不正确')
+        remote_key=lambda key:regions.zone_of(key.rsplit('|',1)[0],cfg) in off
+        main_req={**req,'overrides':{k:v for k,v in overrides.items() if not remote_key(k)}}
+        if req.get('flows') is not None:main_req['flows']=[f for f in req['flows'] if regions.zone_of(f,cfg) not in off]
+        result=_base_preview(wh,main_req,c,version)
+        # Full-context simulation constants, return allocation and reference fallbacks.
+        # The removed destinations never contribute to the main revenue/margin.
+        full_req={**req,'excludeZones':[],'overrides':{k:v for k,v in overrides.items() if remote_key(k)}}
+        full=_base_preview(wh,full_req,c,version)
+        result['remoteRows']=[row for row in full['rows'] if regions.zone_of(row['flow'],cfg) in off]
+        result['remoteAftersales']=full['aftersales']
+    for row in result['rows']+result['remoteRows']:row['zone']=regions.zone_of(row['flow'],cfg)
+    result['remoteStats']={k:sum(bool(x.get(flag)) for row in result['remoteRows'] for x in row['cells']) for k,flag in [('editedCells','edited'),('lossCells','loss')]}
+    result['regionGroups']=cfg
+    result['request']={**result['request'],'overrides':req.get('overrides') or {},'flows':req.get('flows'),'excludeZones':off,'schema':'v3'}
+    return result
+
+def _base_preview(wh, req, c, version):
     s = analysis.settings(wh, req, c)
     customers = req.get('customers', 'all')
     if customers != 'all':
@@ -45,7 +68,7 @@ def _preview(wh, req, c, version):
     if value < 0 or value > 100000:
         raise ValueError('加价数值应为 0–100000')
     only=req.get('flows')
-    if only is not None and (not isinstance(only,list) or not only or any(not isinstance(p,str) or p.count('/')>1 for p in only)):
+    if only is not None and (not isinstance(only,list) or any(not isinstance(p,str) or p.count('/')>1 for p in only)):
         raise ValueError('请提供省份或省/市流向列表')
     city_scope=bool(only and any('/' in p for p in only))
     if city_scope and any('/' not in p for p in only):raise ValueError('省和市报价范围不能混用')
@@ -131,7 +154,7 @@ def save(wh, req):
             if int(req['expectedVersion'])!=version:raise VersionConflict('数据或配置已更新，请重新预览报价后再确认')
             result=_preview(wh,req.get('request') or {},c,version)
             if not result['target']:raise ValueError('请填写报价客户')
-            if not any(x['price'] is not None for r in result['rows'] for x in r['cells']):raise ValueError('没有可报价样本')
+            if not any(x['price'] is not None for r in result['rows']+result.get('remoteRows',[]) for x in r['cells']):raise ValueError('没有可报价样本')
             qid=uuid.uuid4().hex;name=str(req.get('name') or result['target']+'报价')[:200]
             c.execute('INSERT INTO quotes VALUES (?,?,?,?,?,?,?)',[qid,name,result['target'],now(),version,json.dumps(result['request'],ensure_ascii=False),json.dumps(result,ensure_ascii=False)])
             wh.audit(c,'保存报价',{'id':qid,'version':version});c.execute('COMMIT')
@@ -150,7 +173,17 @@ def read(wh,qid):
 
 def export(wh,qid):
     saved=read(wh,qid);r=saved['result'];s=r['scope']
-    return [('报价表',['目的流向']+[b['label'] for b in r['bands']],[[row['flow']]+[x['price'] if x['price'] is not None else '' for x in row['cells']] for row in r['rows']]),
+    def section(rows):
+        output=[]
+        config=r.get('regionGroups',regions.DEFAULT)
+        for name in [g['name'] for g in regions.groups(config)]+[None]:
+            selected=[row for row in rows if row.get('zone',regions.zone_of(row['flow'],config))==name]
+            if selected:output.append([name or '未分组'])
+            output.extend([[row['flow']]+[x['price'] if x['price'] is not None else '' for x in row['cells']] for row in selected])
+        return output
+    table=section(r['rows'])
+    if r.get('remoteRows'):table += [[],['偏远区域']]+section(r['remoteRows'])
+    return [('报价表',['目的流向']+[b['label'] for b in r['bands']],table),
             ('说明',['项目','内容'],[['客户',r['target']],['样本期间',(s['start'] or '不限')+' 至 '+(s['end'] or '不限')],
              ['日期口径','寄件日期' if s['dateBasis']=='send' else '交件（业务日 12:00–次日 12:00）' if r.get('handoverBusinessDay') else '交件日期（历史自然日口径）'],['单位','元/票，四舍五入至 0.1 元'],
              ['补贴类型','沿用现有补贴' if r.get('subsidyMode')=='existing' else r['subsidyType'] or '无补贴'],['确认时间',saved['created']],['说明','空白表示缺少可用样本，需另行商定；5kg以上为该段统一单票价。']])]

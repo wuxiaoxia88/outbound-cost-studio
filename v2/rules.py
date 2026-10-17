@@ -229,7 +229,9 @@ def filter_sql(f):
         if vals:
             where.append('%s IN (%s)' % (col, ','.join('?' * len(vals))))
             args.extend('' if v in (None, '__empty__') else str(v) for v in vals)
-    return where, args
+    from .regions import predicate
+    extra, ea = predicate(f)
+    return where + extra, args + ea
 
 
 def outlier_opts(f):

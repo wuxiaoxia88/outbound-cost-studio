@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import shutil
@@ -43,6 +44,7 @@ def wait_port_free():
 
 
 def main(tag):
+    import fcntl  # macOS release entry point; other platforms can inspect the module.
     if not re.fullmatch(r'v\d+\.\d+\.\d+',tag):raise ValueError('版本标签无效')
     home=Path.home();base=home/'cost-studio';data=home/'cost-studio-data';release=base/'releases'/tag;current=base/'current'
     main_plist=Path('/Library/LaunchDaemons')/(LABEL+'.plist')
@@ -50,50 +52,97 @@ def main(tag):
     if not current.is_symlink():raise RuntimeError('缺少 current 旧版本链接，不能自动回滚')
     previous=current.resolve()
     if previous==release:raise RuntimeError('目标标签已经启用，无需重复发布')
-    uv=sorted((home/'.hermes/tools').glob('uv-*/uv'))
-    if not uv:uv=sorted((home/'.hermes/tools').glob('uv-*'))
-    uv=[p for p in uv if p.is_file() and os.access(p,os.X_OK)]
-    if not uv:raise RuntimeError('未发现 uv 可执行文件')
-    if not (base/'venv/bin/python').exists():command(uv[-1],'venv','--python','3.12',base/'venv')
-    command(uv[-1],'pip','sync','--python',base/'venv/bin/python',release/'requirements-server.txt')
-    command(base/'venv/bin/python','-c',"import platform,sys,duckdb,python_calamine,importlib.metadata as m; assert platform.machine()=='x86_64' and sys.version_info[:2]==(3,12); assert duckdb.__version__=='1.5.6' and m.version('python-calamine')=='0.8.3'")
-    activate(base,data,release,main_plist,Path('/Library/LaunchDaemons')/(LABEL+'.watchdog.plist'))
+    # Prevent the daily job from writing during the release transaction.
+    with (data/'sync.lock').open('a') as lock:
+        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise RuntimeError('每日同步正在运行，请完成后再发布') from None
+        sync_dependencies(base, previous, release, home)
+        activate(base,data,release,main_plist,Path('/Library/LaunchDaemons')/(LABEL+'.watchdog.plist'))
+
+
+def sync_dependencies(base,previous,release,home):
+    python=base/'venv/bin/python';old=previous/'requirements-server.txt';new=release/'requirements-server.txt'
+    unchanged=python.exists() and old.exists() and old.read_bytes()==new.read_bytes()
+    if not unchanged:
+        uv=sorted((home/'.hermes/tools').glob('uv-*/uv'))+sorted((home/'.hermes/tools').glob('uv-*'))
+        uv=[p for p in uv if p.is_file() and os.access(p,os.X_OK)]
+        if not uv:raise RuntimeError('未发现 uv 可执行文件')
+        # A dependency change must be staged in the local cache before release.
+        # No TLS/network dependency during activation. Failure occurs before switch.
+        if not python.exists():command(uv[-1],'venv','--offline','--python','3.12',base/'venv')
+        command(uv[-1],'pip','sync','--offline','--python',python,new)
+    command(python,'-c',"import platform,sys,duckdb,python_calamine,importlib.metadata as m; assert platform.machine()=='x86_64' and sys.version_info[:2]==(3,12); assert duckdb.__version__=='1.5.6' and m.version('python-calamine')=='0.8.3'")
+    return unchanged
+
+
+def unload(label,timeout=30):
+    command('sudo','-n','launchctl','bootout','system/'+label)
+    deadline=time.monotonic()+timeout
+    while True:
+        result=subprocess.run(['sudo','-n','launchctl','print','system/'+label],capture_output=True,text=True)
+        if result.returncode and ('Could not find service' in result.stderr or 'Could not find service' in result.stdout):return
+        if time.monotonic()>=deadline:raise RuntimeError(label+' 卸载未在30秒内完成，未执行 bootstrap')
+        time.sleep(.25)
+
+
+def online_backup(data,release):
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open('http://127.0.0.1:8888/api/bootstrap',timeout=10) as response:token=json.load(response)['token']
+    req=urllib.request.Request('http://127.0.0.1:8888/api/v2/backup',data=b'{}',headers={'Content-Type':'application/json','X-App-Token':token})
+    with opener.open(req,timeout=600) as response:info=json.load(response)
+    if not info.get('ok') or not re.fullmatch(r'\d{8}\.duckdb',info.get('file','')):raise RuntimeError('服务内一致性备份失败')
+    dest=data/'release-backups'/(release.name+'-'+time.strftime('%Y%m%d-%H%M%S'));dest.mkdir(parents=True)
+    target=dest/'warehouse.duckdb';shutil.copy2(data/'backups'/info['file'],target)
+    digest=hashlib.sha256()
+    with target.open('rb') as f:
+        for chunk in iter(lambda:f.read(8<<20),b''):digest.update(chunk)
+    if digest.hexdigest()!=info['sha256'] or target.stat().st_size!=info['bytes']:raise RuntimeError('发布备份 SHA-256/字节数不一致')
+    (dest/'backup.json').write_text(json.dumps(info,ensure_ascii=False,indent=2))
+    return dest
+
+
+def plist_changed(installed,candidate):
+    return candidate.exists() and plistlib.loads(candidate.read_bytes())!=plistlib.loads(installed.read_bytes())
 
 
 def activate(base,data,release,main_plist,guard_plist):
     current=base/'current';previous=current.resolve()
     command('sudo','-n','true')
-    # 禁用看门狗，避免迁移或回滚期间被它启动第二个主进程。
-    command('sudo','-n','launchctl','bootout','system/'+LABEL+'.watchdog')
-    stopped=False;switched=False;backup=None
+    candidate=release/'deploy'/(LABEL+'.plist')
+    changed=plist_changed(main_plist,candidate)
+    old_plist=main_plist.read_bytes()
+    backup=online_backup(data,release)
+    (backup/'service.plist').write_bytes(old_plist)
+    switched=False;unloaded=False;guard_stopped=False
     try:
-        command('sudo','-n','launchctl','bootout','system/'+LABEL);stopped=True
-        wait_port_free()
-        backup=data/'release-backups'/(release.name+'-'+time.strftime('%Y%m%d-%H%M%S'));backup.mkdir(parents=True)
-        # 数据库与 WAL 必须成对保留。原件无变动，不复制一份到每次升级备份中。
-        for name in ('warehouse.duckdb','warehouse.duckdb.wal'):
-            src=data/'v2'/name
-            if src.exists():shutil.copy2(src,backup/name)
-        if not (backup/'warehouse.duckdb').exists():raise RuntimeError('仓库备份缺失')
+        if changed:
+            unload(LABEL);unloaded=True;wait_port_free()
+            command('sudo','-n','install','-o','root','-g','wheel','-m','644',candidate,main_plist)
         select(current,release);switched=True
-        command('sudo','-n','launchctl','bootstrap','system',main_plist)
+        if changed:command('sudo','-n','launchctl','bootstrap','system',main_plist);unloaded=False
+        else:command('sudo','-n','launchctl','kickstart','-k','system/'+LABEL)
         health=wait_health(release.name[1:],data)
         shutil.copy2(release/'docs/部署与运维说明.md',base/'部署与运维说明.md')
-        print(json.dumps({'ok':True,'tag':release.name,'previous':str(previous),'backup':str(backup),'health':health},ensure_ascii=False))
+        print(json.dumps({'ok':True,'tag':release.name,'previous':str(previous),'backup':str(backup),'plistChanged':changed,'health':health},ensure_ascii=False))
     except Exception:
         if switched:
-            subprocess.run(['sudo','-n','launchctl','bootout','system/'+LABEL],check=False)
+            # Rollback is the only unchanged-plist path that unloads: never replace
+            # a live database. Preserve the failed DB as evidence before restoring.
+            unload(LABEL+'.watchdog');guard_stopped=True
+            if not unloaded:unload(LABEL);unloaded=True
             wait_port_free()
-            # 恢复迁移前 DB/WAL，避免旧代码误用已迁移业务日。
+            failed=backup/'failed-state';failed.mkdir()
             for name in ('warehouse.duckdb','warehouse.duckdb.wal'):
                 target=data/'v2'/name
+                if target.exists():shutil.copy2(target,failed/name)
                 target.unlink(missing_ok=True)
                 if (backup/name).exists():shutil.copy2(backup/name,target)
             select(current,previous)
-        if stopped:command('sudo','-n','launchctl','bootstrap','system',main_plist)
+        if changed and unloaded:command('sudo','-n','install','-o','root','-g','wheel','-m','644',backup/'service.plist',main_plist)
+        if unloaded:command('sudo','-n','launchctl','bootstrap','system',main_plist)
         raise
     finally:
-        command('sudo','-n','launchctl','bootstrap','system',guard_plist)
+        if guard_stopped:command('sudo','-n','launchctl','bootstrap','system',guard_plist)
 
 
 if __name__=='__main__':main(sys.argv[1])

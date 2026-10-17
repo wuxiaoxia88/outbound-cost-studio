@@ -87,9 +87,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/bootstrap':
                 return self.reply({'token': self.server.token})
             # Old bookmarks lead to the current UI; retired assets and APIs are unavailable.
-            if path in ('/v2.html', '/legacy.html', '/v3.html', '/v31.html'):
+            if path in ('/v2.html', '/legacy.html', '/v3.html', '/v31.html', '/v32.html'):
                 self.send_response(302); self.send_header('Location','/'); self.send_header('Content-Length','0'); self.end_headers(); return
-            name = 'v32.html' if path in ('/', '/index.html') else path.lstrip('/')
+            name = 'v33.html' if path in ('/', '/index.html') else path.lstrip('/')
             file = BASE/'web'/name
             if file.parent != BASE/'web' or not file.is_file():
                 return self.reply({'error':'未找到'},404)

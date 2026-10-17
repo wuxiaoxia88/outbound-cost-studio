@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
-const V=require('../web/v32-core.js');
+const V=require('../web/v33-core.js');
 test('calendar presets handle leap month and year boundaries',()=>{
   assert.deepEqual(V.dateRange('previous','2024-03-31'),{start:'2024-02-01',end:'2024-02-29'});
   assert.deepEqual(V.dateRange('previous','2026-01-10'),{start:'2025-12-01',end:'2025-12-31'});
@@ -19,7 +19,7 @@ test('money labels distinguish unavailable and zero, suppress negative zero',()=
 });
 test('charts handle sparse, constant and negative actual cost without invalid geometry',()=>{
   const ctx=vm.createContext({...V,st:{unit:'share'},S:{steps:[]},isAll:()=>true,bandOf:()=>-1,colorOf:()=> 'red'});
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v32-charts.js'),'utf8'),ctx);
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v33-charts.js'),'utf8'),ctx);
   for(const cost of [0,-2,3]){
     const d=Array.from({length:61},()=>({n:0,fee:0}));d[8]={n:cost===0?1:50,fee:cost*50};
     ctx.d=d;const svg=vm.runInContext('distChart(d,d,[])',ctx);assert.ok(!/NaN|Infinity/.test(svg));
@@ -31,7 +31,7 @@ test('reference caption reconciles displayed three-decimal cards',()=>{
 });
 test('comparison chart uses combined customer volume for 99.5 percent cutoff',()=>{
  const ctx=vm.createContext({...V,st:{unit:'share'},S:{steps:[]},isAll:()=>false,bandOf:()=>-1,colorOf:()=> 'red'});
- vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v32-charts.js'),'utf8'),ctx);
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v33-charts.js'),'utf8'),ctx);
  ctx.ds=Array.from({length:61},()=>({n:0,fee:0}));ctx.ds[20]={n:10000,fee:20000};ctx.dt=Array.from({length:61},()=>({n:0,fee:0}));ctx.dt[60]={n:10,fee:100};
  assert.equal(vm.runInContext('rangeU(ds)',ctx),20);assert.equal(vm.runInContext('rangeU(dt)',ctx),60);
  const svg=vm.runInContext("overlayChart([{name:'A',d:ds,t:{n:10000}},{name:'B',d:dt,t:{n:10}}])",ctx);assert.ok(!svg.includes('6.0'));assert.ok(svg.includes('2.0'));
@@ -52,7 +52,7 @@ test('quote bulk selection covers row-only, column-only, intersection and hidden
 
 test('cost curves break at absent or undersampled intermediate weights',()=>{
  const ctx=vm.createContext({...V,st:{unit:'share'},S:{steps:[]},isAll:()=>false,bandOf:()=>-1,colorOf:()=> 'red'});
- vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v32-charts.js'),'utf8'),ctx);
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v33-charts.js'),'utf8'),ctx);
  ctx.ds=Array.from({length:61},()=>({n:0,fee:0}));ctx.ds[5]={n:30,fee:60};ctx.ds[7]={n:30,fee:90};ctx.ds[8]={n:30,fee:90};
  const svg=vm.runInContext('distChart(ds,ds,[])',ctx),paths=[...svg.matchAll(/<path d="([^"]*)"/g)].map(x=>x[1]);
  assert.equal(paths.length,2);for(const path of paths){assert.equal((path.match(/M/g)||[]).length,2);assert.equal((path.match(/L/g)||[]).length,1)}
@@ -63,7 +63,7 @@ test('decimal drafts accept decimal intermediates and reject invalid commits',()
 });
 test('history shows sparse-month notice only when needed and uses ISO months',()=>{
  const ctx=vm.createContext({...V,V3:V});
- vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v32-history.js'),'utf8'),ctx);
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../web/v33-history.js'),'utf8'),ctx);
  const month=(m,n)=>({month:m,n,daily:n,avgW:1,avg:2,criticalShare:0,mainShare:1,distribution:[1,...Array(11).fill(0)]});
  const current=month('2026-09',4000),previous=month('2026-08',7);
  ctx.r={history:{months:[previous,current],current,previous,mainBand:{lo:0,hi:.5},delta:null,hiddenMonthCount:4}};
@@ -76,7 +76,7 @@ test('history shows sparse-month notice only when needed and uses ISO months',()
 });
 
 test('交件业务日快捷日期与本次导入范围',()=>{
- const core=require('../web/v32-core.js');
+ const core=require('../web/v33-core.js');
  assert.equal(core.today('handover',new Date('2026-10-16T03:59:59Z')),'2026-10-15');
  assert.equal(core.today('handover',new Date('2026-10-16T04:00:00Z')),'2026-10-16');
  assert.equal(core.today('send',new Date('2026-10-16T03:59:59Z')),'2026-10-16');
@@ -89,4 +89,10 @@ test('仍运行v3.2的服务不能被新静态页面误标为业务日',()=>{
  assert.equal(V.dateLabel('handover',false),'交件（自然日）');
  assert.equal(V.dateLabel('handover',true),'交件（业务日 12:00–次日 12:00）');
  assert.equal(V.dateLabel('send',true),'寄件');
+});
+
+test('bulk quote selection includes separately quoted remote rows',()=>{
+ const r={bands:[{}],rows:[{flow:'浙江',cells:[{key:'a',price:2}]}],remoteRows:[{flow:'新疆',cells:[{key:'b',price:9}]}]};
+ assert.deepEqual(V.quoteSelection(r,new Set(['新疆']),new Set()).cells.map(x=>x.key),['b']);
+ assert.deepEqual(V.quoteSelection(r,new Set(),new Set([0])).cells.map(x=>x.key),['a','b']);
 });

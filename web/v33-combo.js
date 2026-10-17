@@ -1,0 +1,14 @@
+'use strict';
+let comboIndex=-1,comboMatches=[];
+function comboClose(){const list=$('#custList'),input=$('#custSearch');if(list)list.hidden=true;if(input){input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant')}}
+function comboRender(reset=true){const input=$('#custSearch'),list=$('#custList');if(!input||!list)return;const q=input.value.trim().toLocaleLowerCase(),selected=st.sel==='all'?[]:st.sel;
+ const scoped=new Map((st.result?.customerIndex||[]).map(x=>[x.name,x]));
+ const all=st.meta.customers.map(x=>scoped.get(x.name)||{...x,normalN:0,cluster:null}).filter(x=>!selected.includes(x.name)&&x.name.toLocaleLowerCase().includes(q)).sort((a,b)=>b.normalN-a.normalN||a.name.localeCompare(b.name));comboMatches=all.slice(0,12);if(reset)comboIndex=-1;
+ const mark=n=>{const i=n.toLocaleLowerCase().indexOf(q);return q&&i>=0?esc(n.slice(0,i))+'<mark>'+esc(n.slice(i,i+q.length))+'</mark>'+esc(n.slice(i+q.length)):esc(n)};
+ list.innerHTML=comboMatches.map((x,i)=>`<div class="opt ${i===comboIndex?'active':''}" id="customer-option-${i}" role="option" aria-selected="${i===comboIndex}" data-pick="${esc(x.name)}"><span class="nm" title="${esc(x.name)}">${mark(x.name)}</span><span class="meta num">${int(x.normalN)}票</span><span class="tag">${esc(x.normalN<(st.analysis?.minGroupN||300)?'小客户':x.cluster||'未分群')}</span></div>`).join('')+(all.length>12?`<div class="more-hint">还有 ${all.length-12} 个，继续输入缩小范围</div>`:!all.length?'<div class="more-hint">没有匹配的客户</div>':'');list.hidden=false;input.setAttribute('aria-expanded','true');if(comboIndex>=0){input.setAttribute('aria-activedescendant','customer-option-'+comboIndex);list.children[comboIndex]?.scrollIntoView({block:'nearest'})}else input.removeAttribute('aria-activedescendant')}
+function pickCustomer(name){try{const next=V3.selected(st.sel,name);$('#custSearch').value='';comboClose();choose(next);$('#custSearch')?.focus({preventScroll:true});comboClose()}catch(e){toast(e.message)}}
+document.addEventListener('input',e=>{if(e.target.id==='custSearch')comboRender()});
+document.addEventListener('focusin',e=>{if(e.target.id==='custSearch')comboRender()});
+document.addEventListener('mousedown',e=>{if(e.target.closest('[data-pick]'))e.preventDefault()});
+document.addEventListener('click',e=>{const row=e.target.closest('[data-pick]');if(row){pickCustomer(row.dataset.pick);return}if(!e.target.closest('.combo'))comboClose()});
+document.addEventListener('keydown',e=>{if(e.target.id!=='custSearch')return;if(e.key==='Escape'){comboClose();return}if(['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();if($('#custList').hidden)comboRender();comboIndex=Math.max(0,Math.min(comboMatches.length-1,comboIndex+(e.key==='ArrowDown'?1:-1)));comboRender(false)}if(e.key==='Enter'){e.preventDefault();const c=comboMatches[comboIndex]||comboMatches.find(c=>c.name===e.target.value.trim());if(c)pickCustomer(c.name)}});

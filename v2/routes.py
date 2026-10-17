@@ -24,7 +24,7 @@ def handle(h, method, data_dir):
     route = u.path[len('/api/v2/'):]
     try:
         h.safe()
-        allowed = {'GET': {'meta','jobs','raw','batches','quotes','quotes/export'}, 'POST': {'backup','import','batches/start','batches/finish','batches/undo','quote/preview','quotes','matrix','rows','analysis','analysis/decompose','analysis/cell','config','pending','pending/resolve','export'}}
+        allowed = {'GET': {'meta','jobs','raw','batches','quotes','quotes/export'}, 'POST': {'backup','import','batches/start','batches/finish','batches/undo','quote/preview','quotes','matrix','rows','analysis','analysis/decompose','analysis/cell','analysis/export','config','pending','pending/resolve','export'}}
         if route not in allowed.get(method,set()):
             return h.reply({'error': '未找到'},404) or True
         wh = warehouse(data_dir)
@@ -76,6 +76,10 @@ def handle(h, method, data_dir):
                   'analysis': analysis.analysis, 'analysis/decompose': analysis.decompose, 'analysis/cell': analysis.cell}
         if route in simple:
             return h.reply(simple[route](wh, req)) or True
+        if route=='analysis/export':
+            from .reports import sheets
+            from server import multi_workbook
+            return h.reply(multi_workbook(sheets(wh,req)),typ='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',filename='internal-analysis.xlsx') or True
         if route == 'config':
             return h.reply(wh.save_config(req)) or True
         if route == 'pending':

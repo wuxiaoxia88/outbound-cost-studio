@@ -184,7 +184,7 @@ class V2HTTPTest(unittest.TestCase):
 
     def test_current_entry_and_removed_routes(self):
         with urllib.request.urlopen(self.url+'/') as r:
-            html=r.read().decode();self.assertIn('OUTBOUND COST STUDIO',html);self.assertIn('/v32-quote.js',html)
+            html=r.read().decode();self.assertIn('OUTBOUND COST STUDIO',html);self.assertIn('/v33-quote.js',html)
         with urllib.request.urlopen(self.url+'/api/identity') as r:
             self.assertEqual(json.load(r)['app'],'outbound-cost-studio')
         for path in ['strata','strata/rows','anomalies','snapshots','compare']:
