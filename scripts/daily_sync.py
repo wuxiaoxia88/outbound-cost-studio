@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""每天按交件业务日同步。仅通过 HTTP 访问成本库；凭据只在 232 本机读取。"""
+import argparse
+from contextlib import contextmanager
+import datetime as dt
+from decimal import Decimal, InvalidOperation
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+import zipfile
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from v2.store import REQUIRED, calamine_rows, streaming_rows
+
+try: SHANGHAI = ZoneInfo('Asia/Shanghai')
+except ZoneInfoNotFoundError: SHANGHAI = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
+EXPECTED = json.loads(Path(__file__).with_name('outbound_columns.json').read_text())
+
+
+class SyncError(Exception): pass
+class UncertainExport(SyncError): pass
+
+
+def now(): return dt.datetime.now(SHANGHAI).isoformat(timespec='microseconds')
+
+
+def window(day):
+    return {'startTime': f'{day} 12:00:00',
+            'endTime': f'{day + dt.timedelta(days=1)} 11:59:59', 'queryDateType': 2}
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs): return None
+
+
+class HTTP:
+    def __init__(self, url, headers=None):
+        u = urllib.parse.urlsplit(url)
+        if u.scheme != 'http' or u.hostname not in ('127.0.0.1', 'localhost') or u.username or u.password or u.path not in ('', '/'):
+            raise SyncError('同步客户端只允许本机回环 HTTP 地址')
+        self.url, self.headers = url.rstrip('/'), headers or {}
+        self.opener = urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({}))
+
+    def call(self, path, body=None, timeout=60):
+        req = urllib.request.Request(self.url+path, data=None if body is None else json.dumps(body).encode(),
+                                     headers={**self.headers, 'Content-Type': 'application/json'})
+        try:
+            with self.opener.open(req, timeout=timeout) as response: result = json.load(response)
+        except urllib.error.HTTPError as ex:
+            # 不向日志回显服务端请求头、响应体或 Key。
+            if ex.code >= 500: raise UncertainExport(f'上游 HTTP {ex.code}，结果可能已提交') from None
+            raise SyncError(f'接口拒绝 HTTP {ex.code}') from None
+        except (OSError, ValueError, http.client.HTTPException):
+            raise UncertainExport('接口响应未确认，请核对原平台任务后用 --resume 接续') from None
+        if not isinstance(result, dict): raise SyncError('接口返回格式异常')
+        if result.get('error') or result.get('success') is False or result.get('ok') is False or result.get('status') in ('error','failed') or ('code' in result and result['code'] not in (0,200,'200','0')):
+            raise SyncError('接口返回失败（详细原因请在服务日志核对）')
+        return result
+
+    def upload(self, file, group):
+        u = urllib.parse.urlsplit(self.url)
+        conn = http.client.HTTPConnection(u.hostname, u.port, timeout=300)
+        try:
+            conn.putrequest('POST', '/api/v2/import')
+            for k, v in {**self.headers, 'Content-Length': str(file.stat().st_size),
+                         'X-Filename': urllib.parse.quote(file.name), 'X-Import-Group': group}.items():
+                conn.putheader(k, v)
+            conn.endheaders()
+            with file.open('rb') as src:
+                for part in iter(lambda: src.read(1 << 20), b''): conn.send(part)
+            response = conn.getresponse(); result = json.load(response)
+            if response.status != 200 or result.get('error'): raise SyncError('成本库上传失败')
+            return result['jobs'][0]
+        finally: conn.close()
+
+
+@contextmanager
+def process_lock(home):
+    # 同一机器的手动补数和定时任务互斥；崩溃后由内核释放。
+    import fcntl
+    home.mkdir(parents=True, exist_ok=True)
+    with (home/'sync.lock').open('a') as f:
+        try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise SyncError('已有同步运行中，请稍后查看 status') from None
+        try: yield
+        finally: fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def atomic_json(path, data):
+    tmp = path.with_name(path.name+'.tmp')
+    with tmp.open('w') as f:
+        os.chmod(tmp, 0o600); json.dump(data, f, ensure_ascii=False, default=str); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+class Journal:
+    def __init__(self, home):
+        import duckdb
+        self.home = home; home.mkdir(parents=True, exist_ok=True)
+        self.con = duckdb.connect(str(home/'sync_runs.duckdb'))
+        self.con.execute('CREATE TABLE IF NOT EXISTS runs(id VARCHAR PRIMARY KEY, started VARCHAR, finished VARCHAR, status VARCHAR, summary VARCHAR)')
+        self.con.execute('CREATE TABLE IF NOT EXISTS days(run_id VARCHAR, day DATE, updated VARCHAR, status VARCHAR, payload VARCHAR, PRIMARY KEY(run_id,day))')
+
+    def start(self, rid):
+        self.con.execute('INSERT INTO runs VALUES (?,?,NULL,?,?)', [rid, now(), 'running', '同步进行中'])
+        atomic_json(self.home/'sync_latest.json', {'runId': rid, 'started': now(), 'status': 'running', 'summary': '同步进行中'})
+
+    def save(self, rid, day, record):
+        self.con.execute('INSERT OR REPLACE INTO days VALUES (?,?,?,?,?)', [rid, day, now(), record['status'], json.dumps(record, ensure_ascii=False, default=str)])
+
+    def previous(self, day):
+        r = self.con.execute('SELECT payload FROM days WHERE day=? ORDER BY updated DESC LIMIT 1', [day]).fetchone()
+        return json.loads(r[0]) if r else None
+
+    def finish(self, rid, status, summary):
+        self.con.execute('UPDATE runs SET finished=?,status=?,summary=? WHERE id=?', [now(), status, summary, rid])
+        start = self.con.execute('SELECT started FROM runs WHERE id=?', [rid]).fetchone()[0]
+        atomic_json(self.home/'sync_latest.json', {'runId':rid, 'started':start, 'finished':now(), 'status':status, 'summary':summary})
+
+    def close(self): self.con.close()
+
+
+def validate_xlsx(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            if 'xl/workbook.xml' not in z.namelist() or z.testzip(): raise ValueError('invalid workbook')
+    except (OSError, ValueError, zipfile.BadZipFile):
+        raise SyncError('下载文件不是完整 Excel，请核对原平台下载结果') from None
+
+
+def inspect_file(path, day, expected=EXPECTED):
+    validate_xlsx(path)
+    def read(rows):
+        seen, count, total = set(), 0, Decimal(0)
+        current, header = None, None
+        added, missing, sheets, outside, bad_ids = set(), set(), 0, 0, 0
+        lo = dt.datetime.combine(day, dt.time(12)); hi = lo + dt.timedelta(days=1)
+        for sheet, line, row in rows:
+            if sheet != current: current, header = sheet, None
+            if header is None:
+                clean = [str(v).strip() for v in row]
+                if '运单号' not in clean: continue
+                header = clean; sheets += 1
+                if len([x for x in header if x]) != len(set(x for x in header if x)):
+                    raise SyncError('存在重复表头，未导入')
+                added.update(set(header)-set(expected)-{''}); missing.update(set(expected)-set(header))
+                required = set(REQUIRED)-set(header)
+                if required: raise SyncError('缺少必需字段：'+'、'.join(sorted(required)))
+                continue
+            if not any(row): continue
+            record = dict(zip(header, list(row)+['']*max(0,len(header)-len(row))))
+            count += 1; wb = record['运单号'].strip(); seen.add(wb)
+            if not wb: bad_ids += 1
+            try:
+                fee = Decimal(record['总费用(元)'].strip().replace(',', ''))
+                if not fee.is_finite(): raise InvalidOperation
+                total += fee
+            except (InvalidOperation, AttributeError): raise SyncError('总费用含无效金额，未导入') from None
+            try:
+                raw = record['交件时间'].strip()
+                when = dt.datetime(1899,12,30) + dt.timedelta(days=float(raw)) if re.fullmatch(r'\d+(\.\d+)?',raw) else dt.datetime.fromisoformat(raw.replace('/','-'))
+                if not lo <= when < hi: outside += 1
+            except (ValueError, OverflowError, TypeError): outside += 1
+        if not sheets: raise SyncError('未发现运单明细表头')
+        return {'rows':count, 'unique':len(seen), 'fileTotalFee':str(total), 'addedColumns':sorted(added),
+                'missingColumns':sorted(missing), 'outsideWindow':outside, 'emptyWaybills':bad_ids}
+    try: return read(calamine_rows(path))
+    except MemoryError: return read(streaming_rows(path))
+
+
+def export_file(client, day, sleep=time.sleep, download_root=None):
+    for attempt in range(3):
+        try:
+            result = client.call('/api/workflows/outbound-bill-export/one-click-download', window(day), timeout=900)
+            job = result['data']['results']['createJob']
+            if job.get('ok') is False or (job.get('taskId') and not job.get('filePath')): raise UncertainExport('原任务已创建但下载未确认，请核对后用 --resume 接续')
+            path, task = job['filePath'], str(job['taskId'])
+            if not path or not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task): raise SyncError('导出任务标识无效')
+            source=Path(path).expanduser().resolve()
+            allowed=Path(download_root or Path.home()/'zto-exports').expanduser().resolve()
+            if not source.is_relative_to(allowed) or source.suffix.lower()!='.xlsx':
+                raise UncertainExport('导出文件不在指定下载目录内，请核对原任务')
+            return source, task
+        except UncertainExport: raise  # 超时不能证明失败，先接续原任务，避免重复创建。
+        except (SyncError, KeyError, TypeError) as ex:
+            if attempt == 2: raise SyncError('导出失败（已重试 2 次）') from ex
+            sleep(180)
+
+
+def archive(source, target):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() == target.resolve(): return
+    if target.exists():
+        # 断电可能留下已移走的原件；不同内容不能覆盖留痕文件。
+        import hashlib
+        def digest(p):
+            with p.open('rb') as f: return hashlib.file_digest(f,'sha256').hexdigest()
+        if source.exists() and digest(source) != digest(target): raise SyncError('原件归档文件冲突')
+        if source.exists(): source.unlink()
+        return
+    if not source.is_file(): raise SyncError('导出原件不存在，请核对任务下载状态')
+    # 跨文件系统先复制到临时文件、fsync、rename，再删除下载区原件。
+    tmp = target.with_name(target.name+'.partial')
+    with source.open('rb') as src, tmp.open('wb') as out:
+        os.chmod(tmp,0o600); shutil.copyfileobj(src,out,1<<20); out.flush(); os.fsync(out.fileno())
+    os.replace(tmp,target); source.unlink()
+
+
+def process_day(day, record, save, zto, cost, group, raw_root, resume=None, download_root=None):
+    if resume:
+        source, task = Path(resume[1]).expanduser(), resume[0]
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,160}',task): raise SyncError('接续任务标识无效')
+        record.update(taskId=task, source=str(source), status='exported')
+    elif record.get('file') and Path(record['file']).is_file() and record.get('status') in ('exported','validated','importing','import_failed','uncertain'):
+        source, task = Path(record['file']), record['taskId']
+    elif record.get('source') and record.get('status') in ('exported','validated','importing','import_failed','uncertain'):
+        source, task = Path(record['source']), record['taskId']
+    else:
+        if record.get('status') in ('exporting','uncertain'):
+            raise UncertainExport('上次导出结果未确认，请查原平台任务后用 --resume 接续')
+        record.clear(); record['status']='exporting'; save(record)
+        source, task = export_file(zto, day, download_root=download_root)
+        record.update(taskId=task,source=str(source),status='exported'); save(record)
+    target = raw_root/'raw'/'outbound_detail'/day.strftime('%Y/%m')/f'{day}__{task}.xlsx'
+    record.update(file=str(target),status='exported'); save(record)
+    try: validate_xlsx(source if source.is_file() else target)
+    except SyncError: raise UncertainExport('导出任务已创建，但下载不是有效 Excel；请核对原任务后用 --resume 接续') from None
+    archive(source,target)
+    record.update(inspect_file(target,day)); save(record)
+    check = zto.call('/api/data/outbound-bill/query', {**window(day),'pageSize':10})['data']
+    count_value=Decimal(str(check['billCount']))
+    if not count_value.is_finite() or count_value<0 or count_value!=count_value.to_integral_value(): raise SyncError('账单汇总票数无效')
+    bill_count = int(count_value); bill_fee = Decimal(str(check['totalFee']))
+    if not bill_fee.is_finite(): raise SyncError('账单汇总金额无效')
+    record.update(billCount=bill_count,billTotalFee=str(bill_fee),feeGap=str(Decimal(record['fileTotalFee'])-bill_fee))
+    save(record)
+    if record['rows'] != record['unique'] or record['rows'] != bill_count or record['emptyWaybills'] or record['outsideWindow']:
+        raise SyncError('行数、唯一运单数、账单票数或业务日窗口不一致，未导入')
+    record['status']='validated'; save(record)
+    jid = cost.upload(target,group); record.update(jobId=jid,status='importing'); save(record)
+    deadline = time.monotonic()+3600
+    while True:
+        result = cost.call('/api/v2/jobs?id='+urllib.parse.quote(jid))
+        if result['state']=='done': break
+        if result['state']=='error': raise SyncError('成本库导入失败，请核对导入任务日志')
+        if time.monotonic()>deadline: raise SyncError('成本库导入仍在运行，请先核对任务状态再重跑')
+        time.sleep(1)
+    stats = result['stats']
+    if stats.get('conflict'): raise SyncError('导入出现待核冲突，请核对成本库')
+    record.update(status='done',new=max(0,stats['new']-stats.get('replaced',0)),replaced=stats.get('replaced',0),duplicate=stats['duplicate'])
+    save(record)
+    return record
+
+
+def run(args):
+    home, raw_root = Path(args.home).expanduser(), Path(args.raw_root).expanduser()
+    end = dt.date.fromisoformat(args.end) if args.end else dt.datetime.now(SHANGHAI).date()-dt.timedelta(days=1)
+    start = dt.date.fromisoformat(args.start) if args.start else end-dt.timedelta(days=args.recheck_days-1)
+    if start>end or args.recheck_days<1: raise SyncError('日期范围或复核天数无效')
+    if end >= dt.datetime.now(SHANGHAI).date(): raise SyncError('只能同步已结束的业务日')
+    resumes = {dt.date.fromisoformat(d):(t,p) for d,t,p in args.resume}
+    if any(d<start or d>end for d in resumes): raise SyncError('--resume 日期必须在本次范围内')
+    with process_lock(home):
+        key = json.loads(Path(args.key_file).expanduser().read_text())['apiKey']
+        zto = HTTP(args.zto_url,{'X-API-Key':key}); cost = HTTP(args.cost_url)
+        health = cost.call('/api/health')
+        if not health.get('ok') or health.get('version')!='3.2.1': raise SyncError('成本服务版本不是 3.2.1，请先完成发布')
+        cost.headers['X-App-Token']=cost.call('/api/bootstrap')['token']
+        journal=Journal(home); rid=uuid.uuid4().hex; journal.start(rid)
+        group=None; started=time.monotonic(); records=[]; failed=False
+        try:
+            group=cost.call('/api/v2/batches/start',{'name':f'自动同步 {start}…{end}','conflictRule':'replace'})['id']
+            for offset in range((end-start).days+1):
+                day=start+dt.timedelta(days=offset); t=time.monotonic(); record=journal.previous(day) or {}
+                # 完成过的日期需重新导出，才能发现后续补录/改价。
+                if record.get('status')=='done': record={}
+                try:
+                    process_day(day,record,lambda r:journal.save(rid,day,r),zto,cost,group,raw_root,resumes.get(day),args.export_root)
+                except Exception as ex:
+                    failed=True
+                    record.update(status='uncertain' if isinstance(ex,UncertainExport) else 'import_failed' if record.get('status') in ('importing','validated') else 'failed', error=str(ex) if isinstance(ex,SyncError) else '处理异常，请核对服务状态和原始文件')
+                record.update(day=str(day),elapsed=round(time.monotonic()-t,2)); journal.save(rid,day,record); records.append(record)
+            cost.call('/api/v2/batches/finish',{'id':group,'partial':failed})
+        except Exception:
+            failed=True
+            if group:
+                try: cost.call('/api/v2/batches/finish',{'id':group,'partial':True})
+                except Exception: pass
+        finally:
+            pieces=[]
+            for r in records:
+                if r['status']=='done':
+                    gap=Decimal(r['feeGap']); p=f"{r['day'][5:]}：{r['rows']:,} 票 ✓ 票数对账一致；新增 {r['new']:,}、替换 {r['replaced']:,}、重复 {r['duplicate']:,}"
+                    if gap: p+=f'；账单金额差额 {gap} 元'
+                    if r['addedColumns'] or r['missingColumns']: p+='；字段有变化'
+                else: p=f"{r['day'][5:]}：失败，{r.get('error','待核查')}"
+                pieces.append(p)
+            elapsed=int(time.monotonic()-started)
+            summary='出港同步 '+('；'.join(pieces) or '未完成，请检查成本服务')+f'；用时 {elapsed//60} 分 {elapsed%60} 秒'+('；本轮有失败' if failed else '')
+            journal.finish(rid,'failed' if failed else 'done',summary); journal.close()
+        print(summary); return int(failed)
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--home',default=os.environ.get('COST_DATA',str(Path.home()/'cost-studio-data')))
+    parser.add_argument('--raw-root',default=os.environ.get('DATA_ROOT',str(Path.home()/'zto-data')))
+    parser.add_argument('--cost-url',default='http://127.0.0.1:8888')
+    parser.add_argument('--zto-url',default='http://127.0.0.1:9800')
+    parser.add_argument('--export-root',default=str(Path.home()/'zto-exports'),help='ZTO-CLI 下载目录；自动返回的文件路径必须位于此目录')
+    parser.add_argument('--key-file',default=str(Path.home()/'Library/Application Support/zto-cli/server.json'))
+    sub=parser.add_subparsers(dest='command',required=True)
+    go=sub.add_parser('run'); go.add_argument('--from',dest='start'); go.add_argument('--to',dest='end')
+    go.add_argument('--recheck-days',type=int,default=3)
+    go.add_argument('--resume',nargs=3,action='append',default=[],metavar=('DAY','TASK_ID','FILE'),help='核实原任务后接续已有文件，不重复创建导出')
+    status=sub.add_parser('status');status.add_argument('--days',type=int,default=7)
+    sub.add_parser('backup')
+    args=parser.parse_args()
+    try:
+        if args.command=='run': return run(args)
+        if args.command=='backup':
+            client=HTTP(args.cost_url);client.headers['X-App-Token']=client.call('/api/bootstrap')['token']
+            result=client.call('/api/v2/backup',{},timeout=600)
+            print(f"出港备份完成：{result['file']}；数据版本 {result['dataVersion']}；SHA-256 {result['sha256']}");return 0
+        home=Path(args.home).expanduser()
+        if not (home/'sync_runs.duckdb').exists(): print('尚无同步记录');return 0
+        with process_lock(home):
+            journal=Journal(home)
+            try:
+                rows=journal.con.execute('SELECT payload FROM days WHERE day>=? ORDER BY day DESC,updated DESC',[(dt.datetime.now(SHANGHAI).date()-dt.timedelta(days=max(1,args.days))).isoformat()]).fetchall()
+                print(json.dumps([json.loads(r[0]) for r in rows],ensure_ascii=False,indent=2))
+            finally: journal.close()
+        return 0
+    except Exception as ex:
+        print('出港任务失败：'+(str(ex) if isinstance(ex,SyncError) else '运行配置或接口异常，请检查本机服务与凭据文件'));return 1
+
+
+if __name__=='__main__': sys.exit(main())

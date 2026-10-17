@@ -5,7 +5,7 @@ from pathlib import Path
 
 import duckdb
 
-from . import rules
+from . import rules, business_day
 
 REQUIRED = ['运单号', '交件时间', '省', '结算重量(kg)', '总费用(元)']
 # Volatile columns that change without changing the bill; excluded from the content fingerprint.
@@ -96,6 +96,7 @@ class Warehouse:
         from . import imports
         imports.migrate(self)
         self._migrate_simulation()
+        business_day.migrate(self)
 
     def _migrate(self):
         """Policy attributes used by layering and quoting; added in place and backfilled from raw."""
@@ -363,7 +364,7 @@ class Warehouse:
                 CASE WHEN {waybill} IN (SELECT waybill FROM ship WHERE state IN (0, 1, 2))
                        OR row_number() OVER (PARTITION BY {waybill} ORDER BY _sheet, _ln) > 1 THEN 0 ELSE 1 END, ''
               FROM staged'''.format(
-                waybill=text('运单号'), day=day(col('交件时间')), send_day=day(col('寄件时间')), prov=text('省'), city=text('市'), dist=text('区'),
+                waybill=text('运单号'), day=business_day.day_sql(col('交件时间')), send_day=day(col('寄件时间')), prov=text('省'), city=text('市'), dist=text('区'),
                 customer=customer, account=text('电子面单账号'), subsidy=text('客户补贴类型'), pack=text('建包类型'), shift=text('班次类型'),
                 policy=text('政策操作类型'), product=text('增值类型'), status=text('计费状态'),
                 weight=num(col('结算重量(kg)')), fee=num(col('总费用(元)')), dispatch=num(col('派费合计')), transit=num(col('中转费合计')),

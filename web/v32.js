@@ -20,14 +20,14 @@ function toast(msg){const t=document.createElement('div');t.className='toast';t.
 function setBusy(b){st.pending=b;$('#app').setAttribute('aria-busy',b);$('#results')?.classList.toggle('pending',b);if($('#busy'))$('#busy').textContent=b?'正在更新…':''}
 function scopeBar(){
   const chips=isAll()?'':st.sel.map(n=>`<span class="chip on"><span class="dot" style="background:${colorOf(n)}"></span>${esc(n)}<button class="x" data-remove="${esc(n)}" aria-label="移除${esc(n)}">×</button></span>`).join('');
-  const imported=st.meta.lastImport, dateLabel=imported?.start&&imported?.end?`本次导入 ${imported.start.slice(5).replace('-','/')}–${imported.end.slice(5).replace('-','/')}`:'本次导入';
+  const imported=V3.importRange(st.meta.lastImport,st.dateBasis), dateLabel=imported?.start&&imported?.end?`本次导入 ${imported.start.slice(5).replace('-','/')}–${imported.end.slice(5).replace('-','/')}`:'本次导入';
   return `<section class="panel" id="scope"><div class="scope">
     <div class="field" style="flex:1 1 560px"><span class="lab">客户（输入名称添加，可多选；选 2 个以上自动对比，最多 8 个）</span><div class="chips"><button class="chip all" data-cust="all" aria-pressed="${isAll()}">全部客户 · 网点汇总</button>${chips}<div class="combo"><input id="custSearch" class="search" aria-label="搜索添加客户" role="combobox" aria-expanded="false" aria-controls="custList" aria-autocomplete="list" placeholder="+ 搜索添加客户（共 ${st.meta.customers.length} 个）" autocomplete="off"><div id="custList" class="combo-list" role="listbox" hidden></div></div></div></div>
-    <div class="field"><span class="lab">日期（${st.dateBasis==='send'?'寄件':'交件'}）</span><div class="seg">${[['import',dateLabel],['week','近 7 天'],['month','本月'],['previous','上月'],['custom','自定义']].map(([k,v])=>`<button data-date="${k}" aria-pressed="${st.preset===k}" ${k==='import'?`title="另有 ${int(imported?.outside||0)} 票寄件日期在此范围外"`:''} ${k==='import'&&!imported?'disabled':''}>${esc(v)}</button>`).join('')}</div></div>
+    <div class="field"><span class="lab">${st.dateBasis==='send'?'日期（寄件）':V3.dateLabel(st.dateBasis,st.meta.features?.handoverBusinessDay)}</span><div class="seg">${[['import',dateLabel],['week','近 7 天'],['month','本月'],['previous','上月'],['custom','自定义']].map(([k,v])=>`<button data-date="${k}" aria-pressed="${st.preset===k}" ${k==='import'&&st.dateBasis==='send'?`title="另有 ${int(imported?.outside||0)} 票寄件日期在此范围外"`:''} ${k==='import'&&!imported?'disabled':''}>${esc(v)}</button>`).join('')}</div></div>
     <div class="field"><span class="lab">对比期间</span><div class="seg"><button data-period="off" aria-pressed="${!st.comparePrevious}">不对比</button><button data-period="on" aria-pressed="${st.comparePrevious}">对比 ${esc(st.result?.previous?.range?.label||'上期')}</button></div></div>
     <div class="field"><span class="lab">附加费用与政策</span><button class="btn ${simCount()?'primary':''}" data-sim="open">成本模拟 · 已开 ${simCount()} 项</button></div>
     <div class="field"><span class="lab">流向</span><div class="seg"><button data-level="province" aria-pressed="${st.level==='province'}">省</button><button data-level="city" aria-pressed="${st.level==='city'}">市</button></div></div>
-    ${st.preset==='custom'?`<div class="date-fields"><label>日期口径 <select id="dateBasis">${opt('send',st.dateBasis==='send','寄件日期')}${opt('handover',st.dateBasis==='handover','交件日期')}</select></label><label>开始日期 <input type="date" id="start" value="${st.start||''}"></label><label>结束日期 <input type="date" id="end" value="${st.end||''}"></label></div>`:''}
+    ${st.preset==='custom'?`<div class="date-fields"><label>日期口径 <select id="dateBasis">${opt('send',st.dateBasis==='send','寄件日期')}${opt('handover',st.dateBasis==='handover',V3.dateLabel('handover',st.meta.features?.handoverBusinessDay))}</select></label><label>开始日期 <input type="date" id="start" value="${st.start||''}"></label><label>结束日期 <input type="date" id="end" value="${st.end||''}"></label></div>`:''}
   <span id="busy" role="status" style="margin-left:auto">${st.pending?'正在更新…':''}</span></div></section>`;
 }
 function kpis(r){const t=r.overview,b=r.baseBands,main=b.filter(x=>x.cls==='main'),name=r.mode==='all'?'全部客户':r.customers.join('、'),{diff,price,extra}=V3.referenceParts(t),reference=r.mode==='all'?'当前即网点汇总':'账单同结构参考 + 当前选择的模拟调整';return `<section class="kpis analysis-kpis">
@@ -87,7 +87,7 @@ function comparePage(r){
 function render(){return NumericInputs.preserve(renderPage)}
 function renderPage(){
   document.querySelectorAll('.tabs button').forEach(b=>b.setAttribute('aria-selected',b.dataset.page===st.page));
-  const shown=st.result?.scope||st;$('#topMeta').textContent=`数据：${shown.dateBasis==='send'?'寄件':'交件'} ${shown.start||'不限'} – ${shown.end||'不限'}${st.result?' · '+int(st.result.network.n)+' 票正常件':''}`;
+  const shown=st.result?.scope||st;$('#topMeta').textContent=`数据：${V3.dateLabel(shown.dateBasis,st.meta?.features?.handoverBusinessDay)} ${shown.start||'不限'} – ${shown.end||'不限'}${st.result?' · '+int(st.result.network.n)+' 票正常件':''}`;
   if(!st.meta)return;
   $('#versionTag').textContent='v'+st.meta.version;$('#versionTag').title=`发布 ${st.meta.released} · 数据版本 ${st.meta.dataVersion}`;
   if(st.page==='quote'){renderQuote();return}
@@ -140,7 +140,7 @@ document.addEventListener('click',e=>{const t=e.target.closest('button,[data-flo
   if(t.dataset.ranksort){st.rankAsc=st.rankSort===t.dataset.ranksort?!st.rankAsc:false;st.rankSort=t.dataset.ranksort;render();return}
   if(t.dataset.unit){st.unit=t.dataset.unit;render();return}
   if(t.dataset.color){st.colorMode=t.dataset.color;render();return}
-  if(t.dataset.date){st.preset=t.dataset.date;if(st.preset==='custom'){render();return}if(st.preset==='import')st.dateBasis='send';Object.assign(st,V3.dateRange(st.preset,V3.today(),st.meta.lastImport));schedule('切换日期');return}
+  if(t.dataset.date){st.preset=t.dataset.date;if(st.preset==='custom'){render();return}Object.assign(st,V3.dateRange(st.preset,V3.today(st.meta?.features?.handoverBusinessDay?st.dateBasis:'send'),V3.importRange(st.meta.lastImport,st.dateBasis)));schedule('切换日期');return}
   if(t.dataset.level){st.level=t.dataset.level;if(st.level==='city')st.expand=false;st.showAll=false;schedule('切市级');return}
   if(t.dataset.width){st.analysis={...st.analysis,baseWidth:+t.dataset.width};st.dirtyWidth=true;render();return}
   if(t.id==='expandBtn'){st.expand=!st.expand;schedule('细分主要重量');return}
@@ -160,6 +160,6 @@ document.addEventListener('change',e=>{const t=e.target;
 });
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#drawer').hidden){closeDrawer();return}if((e.key==='Enter'||e.key===' ')&&e.target.matches('[data-flow],tr[data-solo]')){e.preventDefault();e.target.click()}});
 async function init(){const started=performance.now();try{
-  const [boot,meta]=await Promise.all([fetch('/api/bootstrap').then(r=>r.json()),api('meta')]);st.token=boot.token;st.meta=meta;st.sim=JSON.parse(JSON.stringify(meta.config.simulation));st.analysis={...meta.analysisConfig};S.steps=meta.steps.map(x=>[x.step,x.jump]);Object.assign(st,V3.dateRange('previous',V3.today()));st.pending=true;render();await loadAnalysis('首次打开',started,++seq);
+  const [boot,meta]=await Promise.all([fetch('/api/bootstrap').then(r=>r.json()),api('meta')]);st.token=boot.token;st.meta=meta;st.sim=JSON.parse(JSON.stringify(meta.config.simulation));st.analysis={...meta.analysisConfig};S.steps=meta.steps.map(x=>[x.step,x.jump]);Object.assign(st,V3.dateRange('previous',V3.today(st.meta?.features?.handoverBusinessDay?st.dateBasis:'send')));st.pending=true;render();await loadAnalysis('首次打开',started,++seq);
 }catch(e){$('#app').innerHTML=`<section class="panel" role="alert"><h2>无法读取本地账单</h2><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">重新加载</button></section>`}}
 init();

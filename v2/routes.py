@@ -24,7 +24,7 @@ def handle(h, method, data_dir):
     route = u.path[len('/api/v2/'):]
     try:
         h.safe()
-        allowed = {'GET': {'meta','jobs','raw','batches','quotes','quotes/export'}, 'POST': {'import','batches/start','batches/finish','batches/undo','quote/preview','quotes','matrix','rows','analysis','analysis/decompose','analysis/cell','config','pending','pending/resolve','export'}}
+        allowed = {'GET': {'meta','jobs','raw','batches','quotes','quotes/export'}, 'POST': {'backup','import','batches/start','batches/finish','batches/undo','quote/preview','quotes','matrix','rows','analysis','analysis/decompose','analysis/cell','config','pending','pending/resolve','export'}}
         if route not in allowed.get(method,set()):
             return h.reply({'error': '未找到'},404) or True
         wh = warehouse(data_dir)
@@ -64,6 +64,9 @@ def handle(h, method, data_dir):
         if size > 10 * 1024 * 1024:
             raise ValueError('请求过大')
         req = json.loads(h.rfile.read(size) or b'{}')
+        if route=='backup':
+            from .operations import backup
+            return h.reply(backup(wh)) or True
         if route=='batches/start':return h.reply(imports.create(wh,req)) or True
         if route=='batches/finish':return h.reply(imports.finish(wh,req)) or True
         if route=='batches/undo':return h.reply(imports.undo(wh,req)) or True

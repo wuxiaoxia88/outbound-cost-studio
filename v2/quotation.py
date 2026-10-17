@@ -117,7 +117,7 @@ def _preview(wh, req, c, version):
         raise ValueError('部分人工改价格已无有效样本或不在所选流向，请恢复建议价后重试')
     bands=[dict(b,n=counts[i],share=counts[i]/n if n else 0,
                 cls='main' if n and counts[i]/n>=s['parameters']['mainShare'] else 'sub' if n and counts[i]/n>=s['parameters']['secondaryShare'] else 'low') for i,b in enumerate(BANDS)]
-    return {'schema':'v3','simulation':sm,'includeAddon':include_addon,'addonPer':ret['per'],'aftersales':ret,'version':version,'target':target,'subsidyMode':subsidy_mode,'subsidyType':subsidy,'scope':s['scope'],'settings':s,'bands':bands,'rows':rows,
+    return {'schema':'v3','handoverBusinessDay':True,'simulation':sm,'includeAddon':include_addon,'addonPer':ret['per'],'aftersales':ret,'version':version,'target':target,'subsidyMode':subsidy_mode,'subsidyType':subsidy,'scope':s['scope'],'settings':s,'bands':bands,'rows':rows,
             'summary':{'n':n,'pricedN':pricedN,'missingN':n-pricedN,'revenue':float(revenue),'profit':float(revenue-pricedCost),
                        'margin':float((revenue-pricedCost)/revenue) if revenue else None,'editedCells':edited,'lossCells':loss},
             'request':{**req,'simulation':sm,'includeAddon':include_addon,'schema':'v3','customers':customers,'target':target,'subsidyMode':subsidy_mode,'subsidyType':subsidy}}
@@ -152,5 +152,5 @@ def export(wh,qid):
     saved=read(wh,qid);r=saved['result'];s=r['scope']
     return [('报价表',['目的流向']+[b['label'] for b in r['bands']],[[row['flow']]+[x['price'] if x['price'] is not None else '' for x in row['cells']] for row in r['rows']]),
             ('说明',['项目','内容'],[['客户',r['target']],['样本期间',(s['start'] or '不限')+' 至 '+(s['end'] or '不限')],
-             ['日期口径','寄件日期' if s['dateBasis']=='send' else '交件日期'],['单位','元/票，四舍五入至 0.1 元'],
+             ['日期口径','寄件日期' if s['dateBasis']=='send' else '交件（业务日 12:00–次日 12:00）' if r.get('handoverBusinessDay') else '交件日期（历史自然日口径）'],['单位','元/票，四舍五入至 0.1 元'],
              ['补贴类型','沿用现有补贴' if r.get('subsidyMode')=='existing' else r['subsidyType'] or '无补贴'],['确认时间',saved['created']],['说明','空白表示缺少可用样本，需另行商定；5kg以上为该段统一单票价。']])]

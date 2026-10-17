@@ -114,8 +114,8 @@ class V3Warehouse(unittest.TestCase):
 
     def test_date_basis_preserves_cross_month(self):
         self.assertEqual(self.call()['overview']['n'],7)
-        self.assertEqual(self.call(dateBasis='handover')['overview']['n'],6)
-        self.assertEqual(self.call(start='2026-10-01',end='2026-10-01',dateBasis='handover')['overview']['n'],1)
+        self.assertEqual(self.call(dateBasis='handover')['overview']['n'],7)
+        self.assertEqual(self.call(start='2026-10-01',end='2026-10-01',dateBasis='handover')['overview']['n'],0)
 
     def test_disable_exclusion_and_no_double_counting(self):
         x=self.call(excludeRules=[])
@@ -165,7 +165,7 @@ class V3Warehouse(unittest.TestCase):
     def test_latest_import_dates_have_both_bases(self):
         m=a.meta(self.wh)['lastImport']
         self.assertEqual(m['end'],'2026-09-30')
-        self.assertEqual(m['dateRanges']['handover']['end'],'2026-10-01')
+        self.assertEqual(m['dateRanges']['handover']['end'],'2026-09-30')
         self.assertEqual(a.meta(self.wh,{'dateBasis':'handover'})['lastImport']['end'],'2026-09-30')
         self.assertEqual(set(m['customers']),{'甲','乙'})
 

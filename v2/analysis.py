@@ -649,6 +649,7 @@ def meta(wh, req=None):
             c.update(normalN=stat['total']['n'] if stat else 0,cluster=stat['key'] if stat else None)
         from .version import VERSION, RELEASED
         result.update(version=VERSION,released=RELEASED,dataVersion=version)
+        result['features']['handoverBusinessDay']=True
         result['features']['historyV32']=True
         result['features']['analysisV3']=True
         result['features']['simulationV31']=True

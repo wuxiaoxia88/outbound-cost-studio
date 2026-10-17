@@ -48,7 +48,8 @@ def verify_dependencies():
  if sys.platform=='darwin':subprocess.run([str(BASE/'runtime-mac/bin/python3'),str(BASE/'scripts/check_dependencies.py')],check=True)
 def package_sources(runtime,launch):
  # Allowlisted product files; no customer fixtures, design data, collaboration notes or archives.
- common=['server.py','使用说明.md','README.md','LICENSE','CHANGELOG.md','build_packages.py','scripts/check_dependencies.py','scripts/make_demo_data.py','docs/demo.png']
+ common=['server.py','使用说明.md','README.md','LICENSE','CHANGELOG.md','build_packages.py','scripts/check_dependencies.py','scripts/make_demo_data.py','docs/demo.png','docs/部署与运维说明.md','requirements-server.txt']
+ common += [str(p.relative_to(BASE)) for p in (BASE/'scripts').glob('*') if p.suffix in ('.py','.sh','.json')]
  for directory in ['web','v2']:
   common += [str(p.relative_to(BASE)) for p in (BASE/directory).glob('*') if p.is_file() and p.suffix in ('.py','.js','.html','.css') and not (directory=='web' and p.name.startswith('v3') and not p.name.startswith('v32'))]
  common += [str(p.relative_to(BASE)) for p in (BASE/'tests').glob('test_*') if p.suffix in ('.py','.cjs')]

@@ -16,8 +16,9 @@ def migrate(wh):
         CREATE TABLE IF NOT EXISTS import_events(id BIGINT PRIMARY KEY, group_id VARCHAR, new_batch VARCHAR);
         CREATE TABLE IF NOT EXISTS import_before(event_id BIGINT, row_id BIGINT, before_row VARCHAR);
     ''')
+    c.execute("ALTER TABLE import_groups ADD COLUMN IF NOT EXISTS name VARCHAR DEFAULT ''")
     # Older files have no upload-operation identifier. Never guess that adjacent uploads were one action.
-    c.execute("INSERT INTO import_groups SELECT b.id,b.created,'done','review',TRUE FROM batches b WHERE b.id NOT IN (SELECT batch_id FROM import_files)")
+    c.execute("INSERT INTO import_groups(id,created,status,conflict_rule,legacy) SELECT b.id,b.created,'done','review',TRUE FROM batches b WHERE b.id NOT IN (SELECT batch_id FROM import_files)")
     c.execute('INSERT INTO import_files SELECT b.id,b.id,b.name,b.stats FROM batches b WHERE b.id NOT IN (SELECT batch_id FROM import_files)')
     c.execute('INSERT INTO import_members SELECT batch,id FROM ship WHERE batch NOT IN (SELECT DISTINCT batch_id FROM import_members)')
     # A crashed uploader leaves successfully committed files recoverable, rather than an eternal spinner.
@@ -25,9 +26,13 @@ def migrate(wh):
 
 
 def create(wh, req=None):
+    req=req or {}
+    rule=req.get('conflictRule',wh.config().get('conflictRule','replace'))
+    if rule not in ('replace','review'):raise ValueError('冲突规则无效')
+    name=str(req.get('name') or '').strip()[:200]
     with wh.wlock:
         gid=uuid.uuid4().hex
-        wh.cursor().execute('INSERT INTO import_groups VALUES (?,?,?,?,FALSE)',[gid,datetime.datetime.now().isoformat(timespec='microseconds'),'open',wh.config().get('conflictRule','replace')])
+        wh.cursor().execute('INSERT INTO import_groups(id,created,status,conflict_rule,legacy,name) VALUES (?,?,?,?,FALSE,?)',[gid,datetime.datetime.now().isoformat(timespec='microseconds'),'open',rule,name])
     return {'id':gid}
 
 
@@ -65,9 +70,9 @@ def file_link(c,gid,bid,name,stats):
 
 
 def _read(c,gid,details=True):
-    g=c.execute('SELECT id,created,status,conflict_rule,legacy FROM import_groups WHERE id=?',[gid]).fetchone()
+    g=c.execute('SELECT id,created,status,conflict_rule,legacy,name FROM import_groups WHERE id=?',[gid]).fetchone()
     if not g:raise ValueError('导入记录不存在')
-    result=dict(zip(('id','created','status','conflictRule','legacy'),g))
+    result=dict(zip(('id','created','status','conflictRule','legacy','name'),g))
     files=c.execute('SELECT batch_id,name,stats FROM import_files WHERE group_id=?',[gid]).fetchall()
     result['files']=[{'id':b,'name':n,**json.loads(s)} for b,n,s in files]
     result['stats']={k:sum(f.get(k,0) or 0 for f in result['files']) for k in ('rows','new','duplicate','conflict','replaced')}
@@ -129,6 +134,8 @@ def undo(wh,req):
                     before=json.loads(raw,parse_float=Decimal);backfill_return |= 'return_bill' not in before;cols=[k for k in before if k!='id']
                     c.execute('UPDATE ship SET '+','.join(q(k)+'=?' for k in cols)+' WHERE id=?',[before[k] for k in cols]+[rid])
             if backfill_return:wh._fill_return_bill(c,'SELECT id FROM undo_ids')
+            from . import business_day
+            business_day.fill(c,'SELECT id FROM undo_ids')
             c.execute("UPDATE import_groups SET status='undone' WHERE id=?",[gid]);wh.audit(c,'撤销导入',{'group':gid});wh.bump(c);version=wh.version(c);c.execute('COMMIT')
         except Exception:c.execute('ROLLBACK');raise
         finally:c.close()

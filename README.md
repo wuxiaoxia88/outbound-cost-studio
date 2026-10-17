@@ -77,3 +77,7 @@ python -m http.server 8790 --directory design/ui-preview
 ## 许可证与版本
 
 [MIT](LICENSE) · 版权所有 wuxiaoxia88。变更见 [CHANGELOG](CHANGELOG.md)。应用版本和发布日期定义于 `v2/version.py`，发布时更新版本、CHANGELOG并建立对应Git标签。
+
+## 服务部署与每日同步
+
+v3.2.1 增加交件业务日（12:00–次日12:00）、每日出港账单同步、一致性备份与局域网 Host 白名单。单机使用方式不变；服务部署、迁移、守护、回滚和同步口径见 [部署与运维说明](docs/部署与运维说明.md)。每日同步脚本适用于目标 Mac，桌面离线分析仍支持 Mac 与 Windows。

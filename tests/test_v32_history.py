@@ -84,6 +84,6 @@ class WarehouseHistory(unittest.TestCase):
                 self.assertEqual(history['hiddenMonthCount'],hidden)
                 self.assertTrue(all(x['n']>0 for x in history['months']))
     def test_meta_version_is_not_data_version(self):
-        m=a.meta(self.wh);self.assertEqual(m['version'],'3.2.0');self.assertIsInstance(m['dataVersion'],int)
+        m=a.meta(self.wh);self.assertTrue(m['features']['handoverBusinessDay']);self.assertEqual(m['version'],'3.2.1');self.assertIsInstance(m['dataVersion'],int)
 
 if __name__=='__main__':unittest.main()

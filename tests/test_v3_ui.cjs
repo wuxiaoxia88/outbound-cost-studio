@@ -74,3 +74,19 @@ test('history shows sparse-month notice only when needed and uses ISO months',()
  ctx.r.history.hiddenMonthCount=0;html=vm.runInContext('historyPanel(r)',ctx);
  assert.ok(!html.includes('零星月份'));
 });
+
+test('交件业务日快捷日期与本次导入范围',()=>{
+ const core=require('../web/v32-core.js');
+ assert.equal(core.today('handover',new Date('2026-10-16T03:59:59Z')),'2026-10-15');
+ assert.equal(core.today('handover',new Date('2026-10-16T04:00:00Z')),'2026-10-16');
+ assert.equal(core.today('send',new Date('2026-10-16T03:59:59Z')),'2026-10-16');
+ const imported={start:'2026-09-01',end:'2026-09-30',dateRanges:{handover:{start:'2026-08-31',end:'2026-09-30'}}};
+ assert.deepEqual(core.dateRange('import','2026-10-17',core.importRange(imported,'handover')),{start:'2026-08-31',end:'2026-09-30'});
+ assert.equal(core.importRange(imported,'send').start,'2026-09-01');
+});
+
+test('仍运行v3.2的服务不能被新静态页面误标为业务日',()=>{
+ assert.equal(V.dateLabel('handover',false),'交件（自然日）');
+ assert.equal(V.dateLabel('handover',true),'交件（业务日 12:00–次日 12:00）');
+ assert.equal(V.dateLabel('send',true),'寄件');
+});

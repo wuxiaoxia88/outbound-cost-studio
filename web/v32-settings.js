@@ -28,7 +28,8 @@ async function importFiles(files){if(importBusy||!files.length)return;captureSet
    let job;do{await new Promise(r=>setTimeout(r,500));job=await api('jobs?id='+upload.jobs[0]);status(`${i+1}/${files.length} · ${job.phase} · ${int(job.rows)} 行 · ${f.name}`)}while(['queued','running'].includes(job.state));if(job.state==='error')throw Error(job.message);
  }catch(e){failed++;toast(f.name+'：'+e.message)}}
  const d=await api('batches/finish',{id:gid,partial:failed>0});await reloadMeta();cfgDraft=null;status(`导入结束：新增/生效 ${int(d.group.stats.new)}，重复 ${int(d.group.stats.duplicate)}，替换 ${int(d.group.stats.replaced)}，待核 ${int(d.group.stats.conflict)}${failed?'；'+failed+' 个文件失败':''}`);toast(importProgress);
- if(d.group.start&&d.group.customers.length){st.page='analysis';st.sel=d.group.customers.length<=8?d.group.customers:'all';st.dateBasis='send';st.preset='import';st.start=d.group.start;st.end=d.group.end;st.level='province';st.expand=false;st.showAll=false;st.compareBand=null;st.decA=st.decB=null;st.dirtyWidth=false;schedule('导入完成')}else render();
+ const span=V3.importRange(d.group,st.dateBasis);
+ if(span.start&&d.group.customers.length){st.page='analysis';st.sel=d.group.customers.length<=8?d.group.customers:'all';st.preset='import';st.start=span.start;st.end=span.end;st.level='province';st.expand=false;st.showAll=false;st.compareBand=null;st.decA=st.decB=null;st.dirtyWidth=false;schedule('导入完成')}else render();
  }catch(e){status(e.message);toast(e.message)}finally{importBusy=false;if(st.page==='data')render()}
 }
 document.addEventListener('click',async e=>{const t=e.target.closest('button');if(!t||t.disabled)return;

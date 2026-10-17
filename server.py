@@ -1,4 +1,4 @@
-"""Local-only Outbound Cost Studio server. Business data lives in data/v2."""
+"""Outbound Cost Studio server. Business data lives in data/v2."""
 import argparse, hashlib, io, json, secrets, signal, threading, webbrowser, zipfile
 from pathlib import Path
 from v2.version import VERSION
@@ -68,7 +68,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b)
     def safe(self):
         host=self.headers.get('Host','')
-        if host not in ('127.0.0.1:'+str(self.server.server_port),'localhost:'+str(self.server.server_port)):raise ValueError('仅允许本机访问')
+        allowed=getattr(self.server,'allowed_hosts',{'127.0.0.1:'+str(self.server.server_port),'localhost:'+str(self.server.server_port)})
+        if len(self.headers.get_all('Host',[]))!=1 or host.lower() not in allowed:raise ValueError('访问地址不在允许列表中')
+        origin=self.headers.get('Origin')
+        if self.command=='POST' and origin and urlparse(origin).netloc.lower()!=host.lower():raise ValueError('请求来源不匹配')
         if self.command=='POST' and self.headers.get('X-App-Token')!=self.server.token:raise ValueError('页面已失效，请刷新后重试')
     def do_GET(self):
         if routes.handle(self, 'GET', self.server.data_dir):
@@ -78,6 +81,9 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == '/api/identity':
                 return self.reply({'app': APP_ID, 'version': VERSION, 'data': data_identity(self.server.data_dir)})
+            if path == '/api/health':
+                from v2.operations import health
+                return self.reply(health(routes.warehouse(self.server.data_dir)))
             if path == '/api/bootstrap':
                 return self.reply({'token': self.server.token})
             # Old bookmarks lead to the current UI; retired assets and APIs are unavailable.
@@ -100,20 +106,26 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     ap=argparse.ArgumentParser(description='出港成本分析')
     ap.add_argument('--port',type=int,default=8888)
+    ap.add_argument('--host',default='127.0.0.1')
+    ap.add_argument('--allow-host',action='append',default=[],help='允许的 Host（可重复，不含协议和路径）')
     ap.add_argument('--data',default=str(BASE/'data'))
     ap.add_argument('--no-browser',action='store_true')
     args=ap.parse_args()
+    for host in args.allow_host:
+        parsed=urlparse('//'+host)
+        if not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or '*' in host:
+            ap.error('--allow-host 必须为明确的主机名或主机名:端口')
     url='http://127.0.0.1:'+str(args.port)
     try:
         import urllib.request
         with urllib.request.urlopen(url+'/api/identity',timeout=2) as r: existing=json.load(r)
-        if existing.get('app')==APP_ID and existing.get('data')==data_identity(args.data):
+        if not args.no_browser and not args.allow_host and existing.get('version')==VERSION and existing.get('app')==APP_ID and existing.get('data')==data_identity(args.data):
             print('出港成本分析已运行 '+url,flush=True)
             if not args.no_browser: webbrowser.open(url)
             return
     except Exception: pass
-    try: server=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
-    except OSError: server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    server=ThreadingHTTPServer((args.host,args.port),Handler)
+    server.allowed_hosts={h.lower() for h in args.allow_host} if args.allow_host else {'127.0.0.1:'+str(server.server_port),'localhost:'+str(server.server_port)}
     server.data_dir=args.data; server.token=secrets.token_urlsafe(32)
     try:
         warehouse=routes.warehouse(args.data)

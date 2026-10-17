@@ -29,7 +29,7 @@ BASE_ROWS = [
     row('X4', 3.4, policy='首中心后退'),               # return
     row('X5', 2.0, prov=''),                          # no_dest
     row('M1', 2.0, parts=(1, 0.5, 0)),                # fee_mismatch (flag only)
-    row('L1', 2.5, hand='2026-10-01 01:00:00', send='2026-09-30 22:00:00'),  # sent in Sept, handed over in Oct
+    row('L1', 2.5, hand='2026-10-01 01:00:00', send='2026-09-30 22:00:00'),  # 寄件9月；10月1日凌晨交件仍属9月30业务日
 ]
 
 
@@ -113,7 +113,7 @@ class V2Test(unittest.TestCase):
     def test_date_basis(self):
         send = self.matrix(filters={'dateBasis': 'send', 'start': '2026-09-01', 'end': '2026-09-30'})['totals']['total']['n']
         hand = self.matrix(filters={'dateBasis': 'handover', 'start': '2026-09-01', 'end': '2026-09-30'})['totals']['total']['n']
-        self.assertEqual((send, hand), (7, 6))
+        self.assertEqual((send, hand), (7, 7))
 
     def test_bands_flows_and_split(self):
         m = self.matrix(bands=[{'lo': 0, 'hi': 1}, {'lo': 1, 'hi': 9999}], flows={'groups': [{'name': '江浙沪', 'members': ['浙江省', '江苏省']}], 'drop': ['广东省']})
