@@ -184,7 +184,7 @@ class V2HTTPTest(unittest.TestCase):
 
     def test_current_entry_and_removed_routes(self):
         with urllib.request.urlopen(self.url+'/') as r:
-            html=r.read().decode();self.assertIn('OUTBOUND COST STUDIO',html);self.assertIn('/v33-quote.js',html)
+            html=r.read().decode();self.assertIn('OUTBOUND COST STUDIO',html);self.assertIn('/v34.bundle.js?v=3.4.0',html)
         with urllib.request.urlopen(self.url+'/api/identity') as r:
             self.assertEqual(json.load(r)['app'],'outbound-cost-studio')
         for path in ['strata','strata/rows','anomalies','snapshots','compare']:
@@ -197,6 +197,25 @@ class V2HTTPTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as e:self.call(route,req)
             self.assertEqual(e.exception.code,404)
         self.assertFalse((self.data/'ledger.sqlite3').exists())
+
+    def test_gzip_static_version_cache_and_concurrent_bundle(self):
+        import gzip
+        from concurrent.futures import ThreadPoolExecutor
+        from v2.version import VERSION
+        def fetch(path, encoding='gzip'):
+            with urllib.request.urlopen(urllib.request.Request(self.url+path,headers={'Accept-Encoding':encoding}),timeout=20) as r:
+                return dict(r.headers),r.read()
+        headers,body=fetch('/v34.bundle.js?v='+VERSION)
+        self.assertEqual(headers.get('Content-Encoding'),'gzip')
+        self.assertIn('immutable',headers['Cache-Control'])
+        self.assertIn(b'function renderAppearance',gzip.decompress(body))
+        headers,plain=fetch('/v34.bundle.js','gzip;q=0')
+        self.assertNotIn('Content-Encoding',headers);self.assertEqual(plain,gzip.decompress(body));self.assertEqual(headers['Cache-Control'],'no-cache')
+        headers,data=fetch('/api/v2/meta')
+        self.assertEqual(headers['Cache-Control'],'no-store');self.assertIn('dataVersion',json.loads(gzip.decompress(data)))
+        with ThreadPoolExecutor(30) as pool:
+            results=list(pool.map(lambda _:fetch('/v34.bundle.js?v='+VERSION)[1],range(30)))
+        self.assertTrue(all(x==body for x in results))
 
     def test_flow(self):
         job = self.call('import', raw=self.file.read_bytes(), headers={'X-Filename': '%E4%B9%9D%E6%9C%88.xlsx'})['jobs'][0]

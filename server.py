@@ -3,9 +3,9 @@ import argparse, hashlib, io, json, secrets, signal, threading, webbrowser, zipf
 from pathlib import Path
 from v2.version import VERSION
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from xml.sax.saxutils import escape
-from v2 import routes
+from v2 import routes, responses
 
 
 class AppServer(ThreadingHTTPServer):
@@ -60,9 +60,14 @@ def multi_workbook(sheets):
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
-    def reply(self,data,status=200,typ='application/json; charset=utf-8',filename=None):
+    def reply(self,data,status=200,typ='application/json; charset=utf-8',filename=None,cache='no-store'):
+        compress=filename is None and typ.startswith(('application/json','text/'))
+        encoded=data if isinstance(data,responses.Encoded) else responses.Encoded(data if isinstance(data,bytes) else responses.dumps(data)) if compress else None
+        zipped=bool(encoded and responses.accepts_gzip(self.headers.get('Accept-Encoding','')))
+        data=(encoded.gzip if zipped else encoded.raw) if encoded else data
         if not isinstance(data,bytes):data=enc(data).encode()
-        self.send_response(status);self.send_header('Content-Type',typ);self.send_header('Content-Length',str(len(data)));self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+        self.send_response(status);self.send_header('Content-Type',typ);self.send_header('Content-Length',str(len(data)));self.send_header('Cache-Control',cache);self.send_header('Vary','Accept-Encoding');self.send_header('X-Content-Type-Options','nosniff')
+        if zipped:self.send_header('Content-Encoding','gzip')
         if filename:self.send_header('Content-Disposition','attachment; filename="'+filename+'"')
         self.end_headers();self.wfile.write(data)
     def reply_file(self,path,filename):
@@ -93,14 +98,21 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/bootstrap':
                 return self.reply({'token': self.server.token})
             # Old bookmarks lead to the current UI; retired assets and APIs are unavailable.
-            if path in ('/v2.html', '/legacy.html', '/v3.html', '/v31.html', '/v32.html'):
+            if path in ('/v2.html', '/legacy.html', '/v3.html', '/v31.html', '/v32.html', '/v33.html'):
                 self.send_response(302); self.send_header('Location','/'); self.send_header('Content-Length','0'); self.end_headers(); return
-            name = 'v33.html' if path in ('/', '/index.html') else path.lstrip('/')
+            name = 'v34.html' if path in ('/', '/index.html') else path.lstrip('/')
             file = BASE/'web'/name
             if file.parent != BASE/'web' or not file.is_file():
                 return self.reply({'error':'未找到'},404)
             typ={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'}.get(file.suffix,'application/octet-stream')
-            return self.reply(file.read_bytes(),typ=typ)
+            stat=file.stat();key=(str(file),stat.st_mtime_ns,stat.st_size)
+            with self.server.asset_lock:
+                if key not in self.server.assets:
+                    self.server.assets={k:v for k,v in self.server.assets.items() if k[0]!=str(file)}
+                    self.server.assets[key]=responses.Encoded(file.read_bytes())
+                data=self.server.assets[key]
+            versioned=file.suffix in ('.js','.css') and parse_qs(urlparse(self.path).query).get('v')==[VERSION]
+            return self.reply(data,typ=typ,cache='private, max-age=31536000, immutable' if versioned else 'no-cache')
         except Exception as ex:
             self.reply({'error':str(ex)},400)
 
@@ -132,11 +144,13 @@ def main():
     except Exception: pass
     server=AppServer((args.host,args.port),Handler)
     server.allowed_hosts={h.lower() for h in args.allow_host} if args.allow_host else {'127.0.0.1:'+str(server.server_port),'localhost:'+str(server.server_port)}
+    server.assets={};server.asset_lock=threading.Lock()
     server.data_dir=args.data; server.token=secrets.token_urlsafe(32)
     try:
         warehouse=routes.warehouse(args.data)
     except Exception:
         server.server_close(); raise
+    responses.service(warehouse).start()
     url='http://127.0.0.1:'+str(server.server_port)
     print('出港成本分析 '+url,flush=True)
     if not args.no_browser: threading.Timer(.6,lambda:webbrowser.open(url)).start()
@@ -146,6 +160,7 @@ def main():
     except KeyboardInterrupt: pass
     finally:
         server.server_close()
+        responses.service(warehouse).close()
         warehouse.con.close()
 
 if __name__=='__main__': main()

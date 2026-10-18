@@ -51,13 +51,15 @@ def package_sources(runtime,launch):
  common=['server.py','使用说明.md','README.md','LICENSE','CHANGELOG.md','build_packages.py','scripts/check_dependencies.py','scripts/make_demo_data.py','docs/demo.png','docs/部署与运维说明.md','requirements-server.txt']
  common += [str(p.relative_to(BASE)) for p in (BASE/'scripts').glob('*') if p.suffix in ('.py','.sh','.json')]
  for directory in ['web','v2']:
-  common += [str(p.relative_to(BASE)) for p in (BASE/directory).glob('*') if p.is_file() and p.suffix in ('.py','.js','.html','.css') and not (directory=='web' and p.name.startswith('v3') and not p.name.startswith('v33'))]
+  common += [str(p.relative_to(BASE)) for p in (BASE/directory).glob('*') if p.is_file() and p.suffix in ('.py','.js','.html','.css') and not (directory=='web' and p.name.startswith('v3') and not p.name.startswith('v34'))]
  common += [str(p.relative_to(BASE)) for p in (BASE/'tests').glob('test_*') if p.suffix in ('.py','.cjs')]
  common += launch
  common += [str(p.relative_to(BASE)) for p in (BASE/runtime).rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.name!='.DS_Store']
  return sorted(set(common))
 
 def build():
+ from scripts.build_web import bundle
+ if (BASE/'web/v34.bundle.js').read_text()!=bundle():raise RuntimeError('请先运行 python scripts/build_web.py 更新前端包')
  verify_dependencies();out=BASE/'dist';out.mkdir(exist_ok=True);result=[]
  for platform,runtime,_,_,_,launch in TARGETS:
   p=out/('出港成本分析-'+platform+'.zip');root='OutboundCostStudio-'+platform

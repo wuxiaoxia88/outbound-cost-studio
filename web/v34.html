@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>出港成本分析</title>
+<link rel="stylesheet" href="/v34.css?v=3.4.0">
+</head>
+<body>
+
+<header class="top"><div class="top-in">
+  <div class="brand">出港成本分析 <span id="versionTag" class="version-tag"></span><small>OUTBOUND COST STUDIO</small></div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-page="analysis" aria-selected="true">成本分析</button>
+    <button role="tab" data-page="quote" aria-selected="false">报价</button>
+    <button role="tab" data-page="data" aria-selected="false">数据与设置</button>
+  </nav>
+  <div class="top-meta" id="topMeta"></div><div class="skins" id="skins" role="group" aria-label="主题"></div>
+</div></header>
+<main id="app" aria-busy="true"><section class="panel" id="initialScope" aria-label="分析筛选"><div class="scope"><div class="field"><span class="lab">客户</span><button class="chip all" disabled>全部客户 · 网点汇总</button></div><div class="field"><span class="lab">日期（寄件）</span><div class="seg"><button disabled>本次导入</button><button disabled>近 7 天</button><button disabled>本月</button><button aria-pressed="true" disabled>上月</button><button disabled>自定义</button></div></div><div class="field"><span class="lab">流向</span><div class="seg"><button disabled>区域</button><button aria-pressed="true" disabled>省</button><button disabled>市</button></div></div><span class="hint" role="status">正在读取本地账单…</span></div></section><section class="skeleton" aria-label="正在计算成本"><div class="sk-cards"><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-card"></div></div><div class="sk sk-panel"></div></section></main>
+<div id="report" class="report" hidden></div><div id="pop" class="pop" role="tooltip" hidden></div><div id="drawer" hidden></div><div id="simulator" hidden></div>
+<script defer src="/v34.bundle.js?v=3.4.0"></script>
+</body></html>

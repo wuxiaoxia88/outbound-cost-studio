@@ -12,11 +12,23 @@ MODULES={'overview','insights','zones','history','dist','heat','aftersales','com
 
 def remember(wh, result):
     result={**result,'snapshotId':uuid.uuid4().hex,'generatedAt':datetime.now().astimezone().isoformat(timespec='seconds')}
+    retain(wh, copy.deepcopy(result))
+    return result
+
+
+def retain(wh, result):
     with LOCK:
         if not hasattr(wh,'_report_snapshots'):wh._report_snapshots=OrderedDict()
-        wh._report_snapshots[result['snapshotId']]=copy.deepcopy(result)
-        while len(wh._report_snapshots)>8:wh._report_snapshots.popitem(last=False)
-    return result
+        wh._report_snapshots[result['snapshotId']]=result
+        wh._report_snapshots.move_to_end(result['snapshotId'])
+        while len(wh._report_snapshots)>48:wh._report_snapshots.popitem(last=False)
+
+
+def read(wh, snapshot_id):
+    with LOCK:
+        r=getattr(wh,'_report_snapshots',{}).get(snapshot_id)
+        if r is None:raise ValueError('分析报告已过期，请刷新分析后重新生成')
+        return r
 
 
 def ranking_rows(rows, req):

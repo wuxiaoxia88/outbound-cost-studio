@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import analytics, analysis, quotation, imports
+from . import analytics, analysis, quotation, imports, responses
 from .store import Warehouse
 
 _warehouse = None
@@ -24,14 +24,19 @@ def handle(h, method, data_dir):
     route = u.path[len('/api/v2/'):]
     try:
         h.safe()
-        allowed = {'GET': {'meta','jobs','raw','batches','quotes','quotes/export'}, 'POST': {'backup','import','batches/start','batches/finish','batches/undo','quote/preview','quotes','matrix','rows','analysis','analysis/decompose','analysis/cell','analysis/export','config','pending','pending/resolve','export'}}
+        allowed = {'GET': {'meta','analysis/default','revision','jobs','raw','batches','quotes','quotes/export'}, 'POST': {'backup','import','batches/start','batches/finish','batches/undo','quote/preview','quotes','matrix','rows','analysis','analysis/decompose','analysis/cell','analysis/export','analysis/details','config','pending','pending/resolve','export'}}
         if route not in allowed.get(method,set()):
             return h.reply({'error': '未找到'},404) or True
         wh = warehouse(data_dir)
         if method == 'GET':
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             if route == 'meta':
-                return h.reply(analysis.meta(wh, q)) or True
+                return h.reply(responses.service(wh).get('meta',q)) or True
+            if route == 'analysis/default':
+                svc=responses.service(wh)
+                return h.reply(svc.get('analysis',svc.default_request())) or True
+            if route == 'revision':
+                return h.reply({'revision':responses.service(wh).current(),'dataVersion':wh.version()}) or True
             if route == 'jobs':
                 return h.reply(wh.jobs.get(q.get('id'), {'state': 'error', 'message': '任务不存在'})) or True
             if route == 'raw':
@@ -72,6 +77,8 @@ def handle(h, method, data_dir):
         if route=='batches/undo':return h.reply(imports.undo(wh,req)) or True
         if route in ('quote/preview','quotes') and req.get('schema')=='v3':
             return h.reply((quotation.preview if route=='quote/preview' else quotation.save)(wh,req)) or True
+        if route=='analysis':return h.reply(responses.service(wh).get('analysis',req)) or True
+        if route=='analysis/details':return h.reply(responses.details(wh,req)) or True
         simple = {'matrix': analytics.matrix, 'rows': analytics.rows,
                   'analysis': analysis.analysis, 'analysis/decompose': analysis.decompose, 'analysis/cell': analysis.cell}
         if route in simple:

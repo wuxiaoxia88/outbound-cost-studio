@@ -55,7 +55,7 @@ class RegionsTest(unittest.TestCase):
         for z in x['heat']['rows']:
             for i,c in enumerate(z['cells']):self.assertEqual(sum(p['cells'][i]['n'] for p in z['provinces']),c['n'])
         self.assertEqual(regions.short('广西壮族自治区'),'广西');self.assertEqual(regions.short('上海市'),'上海')
-        self.assertEqual(len({p for g in regions.DEFAULT_GROUPS for p in g['provinces']}),31)
+        self.assertEqual(len({p for g in regions.DEFAULT_GROUPS for p in g['provinces']}),34)
         with self.assertRaises(ValueError):analysis.analysis(self.full,{**self.req,'excludeZones':['不存在']})
     def test_config_and_ungrouped_empty_scope(self):
         cfg=self.full.config();cfg['regionGroups']['schemes']['default']['groups'][0]['provinces'].remove('浙江')

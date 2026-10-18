@@ -535,9 +535,13 @@ def decompose(wh,req):
 
 
 def analysis(wh,req):
-    t0=time.perf_counter()
+    t0=time.perf_counter(); timings={}
+    def phase(name):
+        now=time.perf_counter();timings[name]=round((now-phase.last)*1000,2);phase.last=now
+    phase.last=t0
     with wh.snapshot() as (cur,version):
         ctx=context(wh,req,cur,version); names,all_view=selection(req,ctx); level=level_of(req)
+        phase('context')
         compare_band=integer(req['compareBand'],'对比重量段',0,11) if req.get('compareBand') is not None else None
         cache_key=(tuple(names),all_view,level,bool(req.get('expand')),bool(req.get('showAll')),compare_band)
         # Immutable cached results: callers must never mutate returned structures.
@@ -587,11 +591,14 @@ def analysis(wh,req):
                 ctx['views'][cache_key]=result
                 if len(ctx['views'])>24:
                     ctx['views'].pop(next(iter(ctx['views'])))
+        phase('view')
         cb=ctx['net'] if all_view else combine(ctx['cubes'],names)
         cubes,net=level_cubes(ctx,cur,level,names,all_view)
         result=simulation.apply(result,ctx,cb,net if all_view else combine(cubes,names),simulation.state(wh,req,cur))
+        phase('simulation')
         result['customerIndex']=[{'name':s['name'],'normalN':s['total']['n'],'cluster':s['key']} for s in ctx['stats'].values()]
         history.attach(wh,cur,version,req,ctx,result,names,all_view)
+        phase('history')
         full=context(wh,{**req,'excludeZones':[]},cur,version) if ctx['settings']['scope']['excludeZones'] else ctx
         cfg=ctx['settings']['regionGroups'];off=ctx['settings']['scope']['excludeZones']
         result['zones']=regions.summary(full,names,all_view,cfg,off)
@@ -608,8 +615,9 @@ def analysis(wh,req):
             result['heat']['rows']=result['heat']['allRows'][:12]
             # Aggregate displayed remainder from the exact simulated cell sums.
             result['heat']['rest']=heat_remainder(result['heat']['allRows'][12:],result['bands'],result['overview']['n'])
+        phase('zonesAndHeat')
         from . import reports
-        result={**result,'elapsedMs':round((time.perf_counter()-t0)*1000,2)}
+        result={**result,'timingsMs':timings,'elapsedMs':round((time.perf_counter()-t0)*1000,2)}
         return reports.remember(wh,result)
 
 
